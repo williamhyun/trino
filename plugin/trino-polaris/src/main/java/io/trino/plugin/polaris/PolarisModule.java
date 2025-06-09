@@ -65,10 +65,10 @@ public class PolarisModule
     }
 
     // This method builds the standard TrinoRestCatalog and makes it available
-    // for injection with the @ForStandardRest annotation.
+    // for injection with the @ForStandardIcebergRest annotation.
     @Provides
     @Singleton
-    @ForStandardRest
+    @ForStandardIcebergRest
     public TrinoCatalog provideStandardRestCatalog(PolarisConfig polarisConfig, TypeManager typeManager)
     {
         RESTSessionCatalog icebergCatalog = new RESTSessionCatalog();

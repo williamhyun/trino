@@ -32,7 +32,7 @@ public class PolarisTrinoCatalog implements TrinoCatalog {
 
     @Inject
     public PolarisTrinoCatalog(
-            @ForStandardRest TrinoCatalog standardRestCatalog, // Inject the standard client
+            @ForStandardIcebergRest TrinoCatalog standardRestCatalog, // Inject the standard client
             @ForPolaris HttpClient polarisHttpClient,         // Inject the custom Polaris client
             PolarisConfig config) {
         this.standardRestCatalog = requireNonNull(standardRestCatalog, "standardRestCatalog is null");
