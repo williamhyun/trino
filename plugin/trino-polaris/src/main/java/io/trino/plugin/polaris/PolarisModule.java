@@ -27,7 +27,6 @@ import io.trino.plugin.iceberg.IcebergModule;
 import io.trino.plugin.iceberg.catalog.TrinoCatalog;
 import io.trino.plugin.iceberg.catalog.rest.TrinoRestCatalog;
 import io.trino.spi.catalog.CatalogName;
-import io.trino.spi.connector.ConnectorId;
 import io.trino.spi.type.TypeManager;
 import org.apache.iceberg.catalog.Namespace;
 import org.apache.iceberg.catalog.TableIdentifier;
@@ -92,7 +91,7 @@ public class PolarisModule
                 "trino-version-placeholder",
                 typeManager,
                 false, // unique table location
-                polarisConfig.isCaseInsensitiveNameMatching,
+                polarisConfig.isCaseInsensitiveNameMatching(),
                 namespaceCache,
                 tableCache);
     }

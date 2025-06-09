@@ -68,7 +68,7 @@ public class PolarisConnectorFactory
         checkStrictSpiVersionMatch(context, this);
 
         Bootstrap app = new Bootstrap(
-                new PolarisModule(context.getCatalogName()));
+                new PolarisModule(context.getCatalogHandle().getCatalogName()));
 
         Injector injector = app
                 .doNotInitializeLogging()
