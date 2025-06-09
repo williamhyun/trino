@@ -54,33 +54,12 @@ public class PolarisCatalogFactory
     @Override
     public TrinoCatalog create(ConnectorIdentity identity)
     {
-        // Step 1: Create the underlying Apache Iceberg RESTSessionCatalog
-        RESTSessionCatalog icebergCatalog = new RESTSessionCatalog();
-
-        // Step 2: Configure it with properties for Polaris
-        icebergCatalog.setConf(ImmutableMap.of()); // No Hadoop conf needed for REST
-        icebergCatalog.initialize(
-                catalogName.toString(),
-                ImmutableMap.<String, String>builder()
-                        .put("uri", polarisConfig.getPolarisServerUri().toString())
-                        // Add any other properties needed for Polaris REST auth here
-                        // For example: .put("token", "...")
-                        .buildOrThrow());
-
-        // Step 3: Wrap the configured Iceberg catalog in Trino's implementation
         return new TrinoRestCatalog(
-                icebergCatalog,
-                catalogName,
-                NONE, // Assuming no special session type is needed
-                ImmutableMap.of(),
-                false,
-                "polaris-", // Prefix for table properties
+                config.getPolarisServerUri(),
+                Optional.empty(), // No specific warehouse needed if Polaris handles it
+                identity,
+                fileSystemFactory,
                 typeManager,
-                false, // unique-table-location
-                false, // use-schema-name-in-table-location
-                PropertyUtil.propertyAsBoolean(icebergCatalog.properties(), "cache-enabled", true) ?
-                        new MapTableIdentifierCache(100) : null,
-                PropertyUtil.propertyAsBoolean(icebergCatalog.properties(), "cache-enabled", true) ?
-                        new MapTableIdentifierCache(10000) : null);
+                sessionPropertiesCodec);
     }
 }
