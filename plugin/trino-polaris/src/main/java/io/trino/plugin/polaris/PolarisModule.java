@@ -13,33 +13,87 @@
  */
 package io.trino.plugin.polaris;
 
+import com.google.common.cache.Cache;
+import com.google.common.collect.ImmutableMap;
 import com.google.inject.Binder;
 import com.google.inject.Module;
+import com.google.inject.Provides;
 import com.google.inject.Scopes;
-import io.trino.filesystem.azure.AzureFileSystemModule;
-import io.trino.filesystem.gcs.GcsFileSystemModule;
-import io.trino.filesystem.s3.S3FileSystemModule;
+import com.google.inject.Singleton;
+import io.airlift.http.client.HttpClient;
+import io.airlift.http.client.jetty.JettyHttpClient;
+import io.trino.cache.EvictableCacheBuilder;
 import io.trino.plugin.iceberg.IcebergModule;
-import io.trino.plugin.iceberg.catalog.TrinoCatalogFactory;
+import io.trino.plugin.iceberg.catalog.TrinoCatalog;
+import io.trino.plugin.iceberg.catalog.rest.TrinoRestCatalog;
+import io.trino.spi.catalog.CatalogName;
+import io.trino.spi.connector.ConnectorId;
+import io.trino.spi.type.TypeManager;
+import org.apache.iceberg.catalog.Namespace;
+import org.apache.iceberg.catalog.TableIdentifier;
+import org.apache.iceberg.rest.RESTSessionCatalog;
+import org.apache.iceberg.util.PropertyUtil;
+
+import java.util.Map;
 
 import static io.airlift.configuration.ConfigBinder.configBinder;
+import static io.trino.plugin.iceberg.catalog.rest.IcebergRestCatalogConfig.SessionType.NONE;
+import static java.util.Objects.requireNonNull;
 
 public class PolarisModule
         implements Module
 {
+    private final CatalogName catalogName;
+
+    public PolarisModule(CatalogName catalogName)
+    {
+        this.catalogName = requireNonNull(catalogName, "catalogName is null");
+    }
+
     @Override
     public void configure(Binder binder)
     {
         configBinder(binder).bindConfig(PolarisConfig.class);
         binder.install(new IcebergModule());
 
-        // Override the default TrinoCatalogFactory with Polaris-specific factory.
-        binder.bind(TrinoCatalogFactory.class)
-                .to(PolarisCatalogFactory.class)
-                .in(Scopes.SINGLETON);
+        // bind the dedicated HttpClient for custom Polaris API calls
+        binder.bind(HttpClient.class)
+                .annotatedWith(ForPolaris.class)
+                .toInstance(new JettyHttpClient(new io.airlift.http.client.HttpClientConfig()));
 
-        binder.install(new S3FileSystemModule());
-        binder.install(new GcsFileSystemModule());
-        binder.install(new AzureFileSystemModule());
+        // Bind the main TrinoCatalog interface to our decorating implementation
+        binder.bind(TrinoCatalog.class).to(PolarisTrinoCatalog.class).in(Scopes.SINGLETON);
+    }
+
+    // This method builds the standard TrinoRestCatalog and makes it available
+    // for injection with the @ForStandardRest annotation.
+    @Provides
+    @Singleton
+    @ForStandardRest
+    public TrinoCatalog provideStandardRestCatalog(PolarisConfig polarisConfig, TypeManager typeManager)
+    {
+        RESTSessionCatalog icebergCatalog = new RESTSessionCatalog();
+        icebergCatalog.setConf(ImmutableMap.of());
+        icebergCatalog.initialize(
+                catalogName.toString(),
+                ImmutableMap.<String, String>builder()
+                        .put("uri", polarisConfig.getUri().orElseThrow().toString())
+                        .buildOrThrow());
+
+        Cache<Namespace, Namespace> namespaceCache = EvictableCacheBuilder.newBuilder().maximumSize(100).build();
+        Cache<TableIdentifier, TableIdentifier> tableCache = EvictableCacheBuilder.newBuilder().maximumSize(10000).build();
+
+        return new TrinoRestCatalog(
+                icebergCatalog,
+                catalogName,
+                NONE,
+                ImmutableMap.of(),
+                polarisConfig.isNestedNamespaceEnabled(),
+                "trino-version-placeholder",
+                typeManager,
+                false, // unique table location
+                polarisConfig.isCaseInsensitiveNameMatching,
+                namespaceCache,
+                tableCache);
     }
 }

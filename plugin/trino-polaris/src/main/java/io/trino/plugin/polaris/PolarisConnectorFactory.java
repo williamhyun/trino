@@ -62,73 +62,19 @@ public class PolarisConnectorFactory
     @Override
     public Connector create(String catalogName, Map<String, String> config, ConnectorContext context)
     {
+        requireNonNull(catalogName, "catalogName is null");
+        requireNonNull(config, "config is null");
+        requireNonNull(context, "context is null");
         checkStrictSpiVersionMatch(context, this);
-        return createConnector(catalogName, config, context, EMPTY_MODULE, Optional.empty());
-    }
 
-    public static Connector createConnector(
-            String catalogName,
-            Map<String, String> config,
-            ConnectorContext context,
-            Module module,
-            Optional<Module> polarisRestCatalogModule)
-    {
-        ClassLoader classLoader = PolarisConnectorFactory.class.getClassLoader();
-        try (ThreadContextClassLoader _ = new ThreadContextClassLoader(classLoader)) {
-            Bootstrap app = new Bootstrap(
-                    new MBeanModule(),
-                    new ConnectorObjectNameGeneratorModule("io.trino.plugin.polaris", "trino.plugin.polaris"),
-                    new JsonModule(),
-                    new IcebergModule(),
-                    new IcebergSecurityModule(),
-                    polarisRestCatalogModule.orElse(new PolarisRestCatalogModule()),
-                    new MBeanServerModule(),
-                    new PolarisFileSystemModule(catalogName, context),
-                    binder -> {
-                        binder.bind(ClassLoader.class).toInstance(PolarisConnectorFactory.class.getClassLoader());
-                        binder.bind(OpenTelemetry.class).toInstance(context.getOpenTelemetry());
-                        binder.bind(Tracer.class).toInstance(context.getTracer());
-                        binder.bind(NodeVersion.class).toInstance(new NodeVersion(context.getNodeManager().getCurrentNode().getVersion()));
-                        binder.bind(NodeManager.class).toInstance(context.getNodeManager());
-                        binder.bind(TypeManager.class).toInstance(context.getTypeManager());
-                        binder.bind(PageIndexerFactory.class).toInstance(context.getPageIndexerFactory());
-                        binder.bind(CatalogHandle.class).toInstance(context.getCatalogHandle());
-                        binder.bind(CatalogName.class).toInstance(new CatalogName(catalogName));
-                        binder.bind(PageSorter.class).toInstance(context.getPageSorter());
-                    },
-                    module);
+        Bootstrap app = new Bootstrap(
+                new PolarisModule(context.getCatalogName()));
 
-            Injector injector = app
-                    .doNotInitializeLogging()
-                    .setRequiredConfigurationProperties(config)
-                    .initialize();
+        Injector injector = app
+                .doNotInitializeLogging()
+                .setRequiredConfigurationProperties(config)
+                .initialize();
 
-            verify(!injector.getBindings().containsKey(Key.get(HiveConfig.class)), "HiveConfig should not be bound");
-
-            return injector.getInstance(PolarisConnector.class);
-        }
-    }
-
-    private static class PolarisFileSystemModule
-            extends AbstractConfigurationAwareModule
-    {
-        private final String catalogName;
-        private final NodeManager nodeManager;
-        private final OpenTelemetry openTelemetry;
-
-        public PolarisFileSystemModule(String catalogName, ConnectorContext context)
-        {
-            this.catalogName = requireNonNull(catalogName, "catalogName is null");
-            this.nodeManager = context.getNodeManager();
-            this.openTelemetry = context.getOpenTelemetry();
-        }
-
-        @Override
-        protected void setup(Binder binder)
-        {
-            // TODO change IcebergConfig -> PolarisConfig
-            boolean metadataCacheEnabled = buildConfigObject(IcebergConfig.class).isMetadataCacheEnabled();
-            install(new FileSystemModule(catalogName, nodeManager, openTelemetry, metadataCacheEnabled));
-        }
+        return injector.getInstance(Connector.class);
     }
 }

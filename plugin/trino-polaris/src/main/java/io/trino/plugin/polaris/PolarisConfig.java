@@ -236,7 +236,6 @@ public class PolarisConfig
         return this;
     }
 
-    // --- Getters and Setters for SigV4 specific properties ---
     @NotNull
     public String getSigV4SigningName()
     {
@@ -251,7 +250,6 @@ public class PolarisConfig
         return this;
     }
 
-    // --- Getters and Setters for OAuth2 specific properties ---
     public Optional<String> getOauth2Credential()
     {
         return Optional.ofNullable(oauth2Credential);
@@ -335,8 +333,6 @@ public class PolarisConfig
     }
 
     // --- Placeholder for general Iceberg behavioral settings ---
-    // These would typically come from IcebergConfig.java and you'd add them here
-    // as needed, with a 'polaris.iceberg.*' prefix for example.
 
     public boolean isRegisterTableProcedureEnabled()
     {
@@ -351,5 +347,5 @@ public class PolarisConfig
         return this;
     }
 
-    // Add other getters and setters from IcebergConfig as required...
+    // Add other getters and setters from IcebergConfig as required
 }

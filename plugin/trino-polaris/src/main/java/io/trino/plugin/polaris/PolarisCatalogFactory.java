@@ -13,41 +13,38 @@
  */
 package io.trino.plugin.polaris;
 
-import com.google.common.collect.ImmutableMap;
 import com.google.inject.Inject;
 import io.airlift.json.JsonCodec;
 import io.trino.plugin.iceberg.catalog.TrinoCatalog;
 import io.trino.plugin.iceberg.catalog.TrinoCatalogFactory;
+import io.trino.plugin.iceberg.catalog.rest.IcebergRestCatalogFileSystemFactory;
 import io.trino.plugin.iceberg.catalog.rest.TrinoRestCatalog;
-import io.trino.spi.catalog.CatalogName;
 import io.trino.spi.security.ConnectorIdentity;
 import io.trino.spi.type.TypeManager;
-import org.apache.iceberg.rest.RESTSessionCatalog;
-import org.apache.iceberg.util.PropertyUtil;
 
 import java.util.Map;
+import java.util.Optional;
 
-import static io.trino.plugin.iceberg.catalog.rest.IcebergRestCatalogConfig.SessionType.NONE;
 import static java.util.Objects.requireNonNull;
 
 public class PolarisCatalogFactory
         implements TrinoCatalogFactory
 {
-    private final CatalogName catalogName;
+    private final PolarisConfig config;
+    private final IcebergRestCatalogFileSystemFactory fileSystemFactory;
     private final TypeManager typeManager;
-    private final PolarisConfig polarisConfig;
     private final JsonCodec<Map<String, String>> sessionPropertiesCodec;
 
     @Inject
     public PolarisCatalogFactory(
-            CatalogName catalogName,
+            PolarisConfig config,
+            IcebergRestCatalogFileSystemFactory fileSystemFactory,
             TypeManager typeManager,
-            PolarisConfig polarisConfig,
             JsonCodec<Map<String, String>> sessionPropertiesCodec)
     {
-        this.catalogName = requireNonNull(catalogName, "catalogName is null");
+        this.config = requireNonNull(config, "config is null");
+        this.fileSystemFactory = requireNonNull(fileSystemFactory, "fileSystemFactory is null");
         this.typeManager = requireNonNull(typeManager, "typeManager is null");
-        this.polarisConfig = requireNonNull(polarisConfig, "polarisConfig is null");
         this.sessionPropertiesCodec = requireNonNull(sessionPropertiesCodec, "sessionPropertiesCodec is null");
     }
 
@@ -55,8 +52,8 @@ public class PolarisCatalogFactory
     public TrinoCatalog create(ConnectorIdentity identity)
     {
         return new TrinoRestCatalog(
-                config.getPolarisServerUri(),
-                Optional.empty(), // No specific warehouse needed if Polaris handles it
+                config.getUri().orElseThrow(() -> new IllegalStateException("Polaris server URI is not set")),
+                Optional.empty(),
                 identity,
                 fileSystemFactory,
                 typeManager,
