@@ -29,14 +29,6 @@ public record PolarisSchema(
         List<PolarisField> fields)
 {
     /**
-     * Creates a schema for Generic tables with a default schema ID.
-     */
-    public static PolarisSchema forGenericTable(List<PolarisField> fields)
-    {
-        return new PolarisSchema(1, fields);
-    }
-
-    /**
      * Represents a field in a Polaris schema.
      */
     @JsonNaming(KebabCaseStrategy.class)
@@ -47,12 +39,5 @@ public record PolarisSchema(
             String type,
             Map<String, String> metadata)
     {
-        /**
-         * Creates a field for Generic tables with default ID and nullable conversion.
-         */
-        public static PolarisField forGenericTable(String name, String type, boolean nullable, Map<String, String> metadata)
-        {
-            return new PolarisField(0, name, !nullable, type, metadata);
-        }
     }
 }
