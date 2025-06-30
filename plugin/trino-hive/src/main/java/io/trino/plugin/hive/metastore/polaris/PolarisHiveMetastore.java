@@ -51,6 +51,7 @@ import java.util.Set;
 
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static io.trino.plugin.hive.HiveErrorCode.HIVE_METASTORE_ERROR;
+import static io.trino.spi.StandardErrorCode.NOT_SUPPORTED;
 import static java.util.Objects.requireNonNull;
 
 public class PolarisHiveMetastore
@@ -77,7 +78,7 @@ public class PolarisHiveMetastore
         catch (PolarisNotFoundException e) {
             return Optional.empty();
         }
-        catch (Exception e) {
+        catch (RuntimeException e) {
             throw new TrinoException(HIVE_METASTORE_ERROR, "Failed to get database: " + databaseName, e);
         }
     }
@@ -91,7 +92,7 @@ public class PolarisHiveMetastore
                     .map(PolarisNamespace::getName)
                     .collect(toImmutableList());
         }
-        catch (Exception e) {
+        catch (RuntimeException e) {
             throw new TrinoException(HIVE_METASTORE_ERROR, "Failed to list databases", e);
         }
     }
@@ -106,7 +107,7 @@ public class PolarisHiveMetastore
                 return Optional.of(convertIcebergToHiveTable(databaseName, tableName, metadata));
             }
         }
-        catch (Exception e) {
+        catch (PolarisNotFoundException ignored) {
             // Fall through to try generic tables
         }
 
@@ -117,7 +118,7 @@ public class PolarisHiveMetastore
                 return Optional.of(convertGenericToHiveTable(databaseName, tableName, genericTable));
             }
         }
-        catch (Exception e) {
+        catch (PolarisNotFoundException ignored) {
             // Table not found
         }
 
@@ -142,13 +143,13 @@ public class PolarisHiveMetastore
     @Override
     public void updateTableStatistics(String databaseName, String tableName, OptionalLong acidWriteId, StatisticsUpdateMode mode, PartitionStatistics statisticsUpdate)
     {
-        // Statistics updates not supported yet
+        throw new UnsupportedOperationException("Table statistics updates are not supported by Polaris");
     }
 
     @Override
     public void updatePartitionStatistics(Table table, StatisticsUpdateMode mode, Map<String, PartitionStatistics> partitionUpdates)
     {
-        // Statistics updates not supported yet
+        throw new UnsupportedOperationException("Partition statistics updates are not supported by Polaris");
     }
 
     public List<String> getAllTables(String databaseName)
@@ -170,7 +171,7 @@ public class PolarisHiveMetastore
                     .addAll(genericTables)
                     .build();
         }
-        catch (Exception e) {
+        catch (RuntimeException e) {
             throw new TrinoException(HIVE_METASTORE_ERROR, "Failed to list tables in database: " + databaseName, e);
         }
     }
@@ -197,7 +198,7 @@ public class PolarisHiveMetastore
                     .map(PolarisTableIdentifier::getName)
                     .collect(toImmutableList());
         }
-        catch (Exception e) {
+        catch (RuntimeException e) {
             throw new TrinoException(HIVE_METASTORE_ERROR, "Failed to list views in database: " + databaseName, e);
         }
     }
@@ -209,7 +210,7 @@ public class PolarisHiveMetastore
             PolarisNamespace namespace = new PolarisNamespace(database.getDatabaseName(), database.getParameters());
             polarisClient.createNamespace(namespace);
         }
-        catch (Exception e) {
+        catch (RuntimeException e) {
             throw new TrinoException(HIVE_METASTORE_ERROR, "Failed to create database: " + database.getDatabaseName(), e);
         }
     }
@@ -220,7 +221,7 @@ public class PolarisHiveMetastore
         try {
             polarisClient.dropNamespace(databaseName);
         }
-        catch (Exception e) {
+        catch (RuntimeException e) {
             throw new TrinoException(HIVE_METASTORE_ERROR, "Failed to drop database: " + databaseName, e);
         }
     }
@@ -228,19 +229,19 @@ public class PolarisHiveMetastore
     @Override
     public void renameDatabase(String databaseName, String newDatabaseName)
     {
-        throw new UnsupportedOperationException("Rename database is not supported by Polaris");
+        throw new TrinoException(NOT_SUPPORTED, "Rename database is not supported by Polaris");
     }
 
     @Override
     public void setDatabaseOwner(String databaseName, HivePrincipal principal)
     {
-        // Database ownership not supported
+        throw new TrinoException(NOT_SUPPORTED, "Database ownership is not supported by Polaris");
     }
 
     @Override
     public void createTable(Table table, PrincipalPrivileges principalPrivileges)
     {
-        throw new UnsupportedOperationException("Table creation through metastore is not supported - use format-specific connectors");
+        throw new TrinoException(NOT_SUPPORTED, "Table creation is not yet supported");
     }
 
     @Override
@@ -253,7 +254,7 @@ public class PolarisHiveMetastore
                 return;
             }
         }
-        catch (Exception e) {
+        catch (RuntimeException e) {
             // Fall through to try generic tables
         }
 
@@ -262,7 +263,7 @@ public class PolarisHiveMetastore
                 polarisClient.dropGenericTable(databaseName, tableName);
             }
         }
-        catch (Exception e) {
+        catch (RuntimeException e) {
             throw new TrinoException(HIVE_METASTORE_ERROR, "Failed to drop table: " + databaseName + "." + tableName, e);
         }
     }
@@ -270,7 +271,7 @@ public class PolarisHiveMetastore
     @Override
     public void replaceTable(String databaseName, String tableName, Table newTable, PrincipalPrivileges principalPrivileges, Map<String, String> environmentContext)
     {
-        throw new UnsupportedOperationException("Replace table is not supported by Polaris");
+        throw new TrinoException(NOT_SUPPORTED, "Replace table is not supported by Polaris");
     }
 
     @Override
@@ -279,7 +280,7 @@ public class PolarisHiveMetastore
         try {
             polarisClient.renameTable(databaseName, tableName, newDatabaseName, newTableName);
         }
-        catch (Exception e) {
+        catch (RuntimeException e) {
             throw new TrinoException(HIVE_METASTORE_ERROR, "Failed to rename table", e);
         }
     }
@@ -287,19 +288,19 @@ public class PolarisHiveMetastore
     @Override
     public void commentTable(String databaseName, String tableName, Optional<String> comment)
     {
-        // Table comments not supported
+        throw new TrinoException(NOT_SUPPORTED, "Table comments are not supported by Polaris");
     }
 
     @Override
     public void setTableOwner(String databaseName, String tableName, HivePrincipal principal)
     {
-        // Table ownership not supported
+        throw new TrinoException(NOT_SUPPORTED, "Table ownership is not supported by Polaris");
     }
 
     @Override
     public void commentColumn(String databaseName, String tableName, String columnName, Optional<String> comment)
     {
-        // Column comments not supported
+        throw new TrinoException(NOT_SUPPORTED, "Column comments are not supported by Polaris");
     }
 
     // Partition operations - not supported for Iceberg/Delta tables
@@ -488,19 +489,19 @@ public class PolarisHiveMetastore
     @Override
     public void addColumn(String databaseName, String tableName, String columnName, HiveType columnType, String columnComment)
     {
-        throw new UnsupportedOperationException("Add column is not supported by Polaris");
+        throw new TrinoException(NOT_SUPPORTED, "Add column is not supported by Polaris");
     }
 
     @Override
     public void renameColumn(String databaseName, String tableName, String oldColumnName, String newColumnName)
     {
-        throw new UnsupportedOperationException("Rename column is not supported by Polaris");
+        throw new TrinoException(NOT_SUPPORTED, "Rename column is not supported by Polaris");
     }
 
     @Override
     public void dropColumn(String databaseName, String tableName, String columnName)
     {
-        throw new UnsupportedOperationException("Drop column is not supported by Polaris");
+        throw new TrinoException(NOT_SUPPORTED, "Drop column is not supported by Polaris");
     }
 
     // Privilege operations - not supported
