@@ -303,7 +303,7 @@ public class PolarisHiveMetastore
         throw new TrinoException(NOT_SUPPORTED, "Column comments are not supported by Polaris");
     }
 
-    // Partition operations - not supported for Iceberg/Delta tables
+    // Partition operations - handled by format-specific connectors
     @Override
     public Optional<Partition> getPartition(Table table, List<String> partitionValues)
     {
@@ -330,19 +330,19 @@ public class PolarisHiveMetastore
     @Override
     public void addPartitions(String databaseName, String tableName, List<PartitionWithStatistics> partitions)
     {
-        throw new UnsupportedOperationException("Partitions are not supported by Polaris");
+        throw new UnsupportedOperationException("Partition management is handled by format-specific connectors");
     }
 
     @Override
     public void dropPartition(String databaseName, String tableName, List<String> parts, boolean deleteData)
     {
-        throw new UnsupportedOperationException("Partitions are not supported by Polaris");
+        throw new UnsupportedOperationException("Partition management is handled by format-specific connectors");
     }
 
     @Override
     public void alterPartition(String databaseName, String tableName, PartitionWithStatistics partition)
     {
-        throw new UnsupportedOperationException("Partitions are not supported by Polaris");
+        throw new UnsupportedOperationException("Partition management is handled by format-specific connectors");
     }
 
     // Role and privilege operations - not supported by Polaris
