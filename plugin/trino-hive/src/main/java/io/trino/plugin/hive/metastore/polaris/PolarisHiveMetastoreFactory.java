@@ -20,6 +20,8 @@ import io.trino.spi.security.ConnectorIdentity;
 
 import java.util.Optional;
 
+import static java.util.Objects.requireNonNull;
+
 public class PolarisHiveMetastoreFactory
         implements HiveMetastoreFactory
 {
@@ -28,12 +30,13 @@ public class PolarisHiveMetastoreFactory
     @Inject
     public PolarisHiveMetastoreFactory(PolarisRestClient restClient)
     {
-        this.restClient = restClient;
+        this.restClient = requireNonNull(restClient, "restClient is null");
     }
 
     @Override
     public HiveMetastore createMetastore(Optional<ConnectorIdentity> identity)
     {
+        // Create new instance per call - simple and clean
         return new PolarisHiveMetastore(restClient);
     }
 
