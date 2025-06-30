@@ -41,4 +41,4 @@ public class DeltaLakePolarisMetastoreTableOperationsProvider
         // Polaris returns standard HiveMetastore interface, so we can reuse the file-based operations
         return new DeltaLakeFileMetastoreTableOperations(hiveMetastoreFactory.createMetastore(Optional.of(session.getIdentity())));
     }
-} 
+}
