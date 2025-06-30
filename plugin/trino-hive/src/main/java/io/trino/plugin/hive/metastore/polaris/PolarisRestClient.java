@@ -745,7 +745,8 @@ public class PolarisRestClient
             return null;
         }
 
-        String type = (String) schemaMap.get("type");
+        // Get schema ID, default to 1 if not present
+        Integer schemaId = (Integer) schemaMap.getOrDefault("schema-id", 1);
         Object fieldsObj = schemaMap.get("fields");
         List<Map<String, Object>> fieldsData = objectMapper.convertValue(fieldsObj, new TypeReference<List<Map<String, Object>>>() {});
 
@@ -756,18 +757,20 @@ public class PolarisRestClient
                     .collect(toImmutableList());
         }
 
-        return new PolarisSchema(type, fields);
+        return new PolarisSchema(schemaId, fields);
     }
 
     private PolarisSchema.PolarisField convertFieldMap(Map<String, Object> fieldMap)
     {
+        Integer id = (Integer) fieldMap.getOrDefault("id", 0);
         String name = (String) fieldMap.get("name");
         String type = (String) fieldMap.get("type");
         Boolean nullable = (Boolean) fieldMap.getOrDefault("nullable", true);
+        boolean required = !nullable;
         Object metadataObj = fieldMap.getOrDefault("metadata", ImmutableMap.of());
         Map<String, String> metadata = objectMapper.convertValue(metadataObj, new TypeReference<Map<String, String>>() {});
 
-        return new PolarisSchema.PolarisField(name, type, nullable, metadata);
+        return new PolarisSchema.PolarisField(id, name, required, type, metadata);
     }
 
     private static class UriBuilder

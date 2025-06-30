@@ -33,4 +33,4 @@ public class DeltaLakePolarisMetastoreModule
         binder.bind(Key.get(boolean.class, AllowDeltaLakeManagedTableRename.class)).toInstance(true);
         binder.bind(Key.get(int.class, MaxTableParameterLength.class)).toInstance(Integer.MAX_VALUE);
     }
-} 
+}

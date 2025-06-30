@@ -550,8 +550,8 @@ public class PolarisHiveMetastore
     {
         List<Column> columns = ImmutableList.of();
         if (genericTable.getSchema() != null) {
-            columns = genericTable.getSchema().getFields().stream()
-                    .map(field -> new Column(field.getName(), HiveType.valueOf(field.getType()), Optional.empty(), ImmutableMap.of()))
+            columns = genericTable.getSchema().fields().stream()
+                    .map(field -> new Column(field.name(), HiveType.valueOf(field.type()), Optional.empty(), ImmutableMap.of()))
                     .collect(toImmutableList());
         }
 
