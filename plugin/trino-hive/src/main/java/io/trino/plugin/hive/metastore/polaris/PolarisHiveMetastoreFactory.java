@@ -36,7 +36,7 @@ public class PolarisHiveMetastoreFactory
     @Override
     public HiveMetastore createMetastore(Optional<ConnectorIdentity> identity)
     {
-        // Create new instance per call - simple and clean
+        // Create new instance per call
         return new PolarisHiveMetastore(restClient);
     }
 
