@@ -395,7 +395,8 @@ public class PolarisRestClient
 
     public void renameTable(String sourceNamespace, String sourceTable, String destNamespace, String destTable)
     {
-        URI uri = buildUri("/v1/" + config.getPrefix() + "/tables/rename").build();
+        URI uri = buildUri("/v1/" + config.getPrefix() + "/namespaces/" + encodeNamespace(sourceNamespace) + "/tables/" + sourceTable + "/rename")
+                .build();
 
         Map<String, Object> requestBody = ImmutableMap.of(
                 "source", ImmutableMap.of(
@@ -427,6 +428,44 @@ public class PolarisRestClient
                     throw new PolarisNotFoundException("Table not found: " + sourceNamespace + "." + sourceTable);
                 }
                 return null;
+            }
+        });
+    }
+
+    public PolarisTableMetadata createTable(String namespaceName, String tableName, Map<String, Object> tableRequest)
+    {
+        URI uri = buildUri("/v1/" + config.getPrefix() + "/namespaces/" + encodeNamespace(namespaceName) + "/tables")
+                .build();
+
+        Request request = preparePost()
+                .setUri(uri)
+                .addHeaders(buildHeaders(getAuthHeaders()))
+                .addHeader("Content-Type", "application/json")
+                .setBodyGenerator(createJsonBodyGenerator(tableRequest))
+                .build();
+
+        return execute(request, new ResponseHandler<PolarisTableMetadata, RuntimeException>()
+        {
+            @Override
+            public PolarisTableMetadata handleException(Request request, Exception exception)
+            {
+                throw new PolarisException("Failed to create table: " + exception.getMessage(), exception);
+            }
+
+            @Override
+            public PolarisTableMetadata handle(Request request, io.airlift.http.client.Response response)
+            {
+                try {
+                    if (response.getStatusCode() == 409) {
+                        throw new PolarisAlreadyExistsException("Table already exists: " + namespaceName + "." + tableName);
+                    }
+
+                    JsonNode root = objectMapper.readTree(response.getInputStream());
+                    return parseTableMetadata(root);
+                }
+                catch (Exception e) {
+                    throw new PolarisException("Failed to parse create table response", e);
+                }
             }
         });
     }
