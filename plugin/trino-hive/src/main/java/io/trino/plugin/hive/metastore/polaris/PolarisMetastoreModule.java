@@ -36,19 +36,29 @@ public class PolarisMetastoreModule
     @Override
     protected void setup(Binder binder)
     {
-        // 1. Load configuration for immediate validation
+        // 1. Load configuration for immediate validation and conditional module installation
         PolarisMetastoreConfig polarisConfig = buildConfigObject(PolarisMetastoreConfig.class);
         requireNonNull(polarisConfig.getUri(), "polaris.uri is required");
 
         // 2. Bind configuration for runtime injection
         configBinder(binder).bindConfig(PolarisMetastoreConfig.class);
 
-        // 3. Bind HTTP client for Polaris API calls
+        // 3. Install security module based on configuration
+        switch (polarisConfig.getSecurity()) {
+            case OAUTH2 -> {
+                configBinder(binder).bindConfig(OAuth2SecurityConfig.class);
+                install(new OAuth2SecurityModule());
+            }
+            case NONE -> install(new NoneSecurityModule());
+        }
+
+        // 4. Bind AWS properties (currently none, but ready for future SigV4 support)
+        binder.bind(AwsProperties.class).to(DefaultAwsProperties.class).in(Scopes.SINGLETON);
+
+        // 5. Bind HTTP client for Polaris API calls
         httpClientBinder(binder).bindHttpClient("polaris", ForPolarisClient.class);
 
-        // 4. Note: ObjectMapper is provided via @Provides method below
-
-        // 5. Bind core components
+        // 6. Bind core components
         binder.bind(PolarisRestClient.class).in(Scopes.SINGLETON);
 
         binder.bind(HiveMetastoreFactory.class)
@@ -56,17 +66,20 @@ public class PolarisMetastoreModule
                 .to(PolarisHiveMetastoreFactory.class)
                 .in(Scopes.SINGLETON);
 
-        // 6. Bind standard Hive settings
+        // 7. Bind standard Hive settings
         binder.bind(Key.get(boolean.class, AllowHiveTableRename.class)).toInstance(true);
     }
 
     @Provides
     @Singleton
-    public RESTSessionCatalog createRESTSessionCatalog(PolarisMetastoreConfig config)
+    public RESTSessionCatalog createRESTSessionCatalog(
+            PolarisMetastoreConfig config,
+            SecurityProperties securityProperties,
+            AwsProperties awsProperties)
     {
         RESTSessionCatalog catalog = new RESTSessionCatalog();
 
-        // Build properties map with authentication
+        // Build properties map following Iceberg REST catalog pattern
         ImmutableMap.Builder<String, String> properties = ImmutableMap.<String, String>builder();
         properties.put("uri", config.getUri().toString());
         properties.put("prefix", config.getPrefix());
@@ -74,21 +87,11 @@ public class PolarisMetastoreModule
         // Add warehouse if specified
         config.getWarehouse().ifPresent(warehouse -> properties.put("warehouse", warehouse));
 
-        // Add authentication properties based on auth type
-        switch (config.getAuthType().toUpperCase()) {
-            case "BEARER_TOKEN":
-                config.getToken().ifPresent(token -> properties.put("token", token));
-                break;
-            case "OAUTH2":
-                config.getClientId().ifPresent(clientId -> properties.put("credential", clientId + ":" + config.getClientSecret().orElse("")));
-                config.getOauthTokenUri().ifPresent(uri -> properties.put("oauth2-server-uri", uri.toString()));
-                config.getScope().ifPresent(scope -> properties.put("scope", scope));
-                break;
-            case "NONE":
-            default:
-                // No authentication properties needed
-                break;
-        }
+        // Add security properties from the injected SecurityProperties
+        properties.putAll(securityProperties.get());
+
+        // Add AWS properties (empty for now, but ready for future SigV4 support)
+        properties.putAll(awsProperties.get());
 
         catalog.initialize("polaris", properties.buildOrThrow());
         return catalog;
