@@ -36,6 +36,7 @@ import io.trino.metastore.Table;
 import io.trino.metastore.TableInfo;
 import io.trino.spi.TrinoException;
 import io.trino.spi.connector.SchemaTableName;
+import io.trino.spi.connector.TableNotFoundException;
 import io.trino.spi.function.LanguageFunction;
 import io.trino.spi.predicate.TupleDomain;
 import io.trino.spi.security.RoleGrant;
@@ -70,13 +71,18 @@ public class PolarisHiveMetastore
     public Optional<Database> getDatabase(String databaseName)
     {
         try {
-            PolarisNamespace namespace = polarisClient.getNamespace(databaseName);
-            return Optional.of(Database.builder()
-                    .setDatabaseName(namespace.getName())
-                    .setParameters(namespace.getProperties())
-                    .build());
-        }
-        catch (PolarisNotFoundException e) {
+            // Check if namespace exists by trying to list namespaces and find this one
+            List<PolarisNamespace> namespaces = polarisClient.listNamespaces(Optional.empty());
+            Optional<PolarisNamespace> namespace = namespaces.stream()
+                    .filter(ns -> ns.getName().equals(databaseName))
+                    .findFirst();
+
+            if (namespace.isPresent()) {
+                return Optional.of(Database.builder()
+                        .setDatabaseName(namespace.get().getName())
+                        .setParameters(namespace.get().getProperties())
+                        .build());
+            }
             return Optional.empty();
         }
         catch (RuntimeException e) {
@@ -103,10 +109,8 @@ public class PolarisHiveMetastore
     {
         // Try Iceberg tables first
         try {
-            if (polarisClient.tableExists(databaseName, tableName)) {
-                PolarisTableMetadata metadata = polarisClient.loadTable(databaseName, tableName);
-                return Optional.of(convertIcebergToHiveTable(databaseName, tableName, metadata));
-            }
+            PolarisTableMetadata metadata = polarisClient.loadIcebergTable(databaseName, tableName);
+            return Optional.of(convertIcebergToHiveTable(databaseName, tableName, metadata));
         }
         catch (PolarisNotFoundException ignored) {
             // Fall through to try generic tables
@@ -122,7 +126,6 @@ public class PolarisHiveMetastore
         catch (PolarisNotFoundException ignored) {
             // Table not found
         }
-
         return Optional.empty();
     }
 
@@ -157,7 +160,7 @@ public class PolarisHiveMetastore
     {
         try {
             // Get both Iceberg and generic tables
-            List<String> icebergTables = polarisClient.listTables(databaseName)
+            List<String> icebergTables = polarisClient.listIcebergTables(databaseName)
                     .stream()
                     .map(PolarisTableIdentifier::getName)
                     .collect(toImmutableList());
@@ -193,15 +196,8 @@ public class PolarisHiveMetastore
 
     public List<String> getAllViews(String databaseName)
     {
-        try {
-            return polarisClient.listViews(databaseName)
-                    .stream()
-                    .map(PolarisTableIdentifier::getName)
-                    .collect(toImmutableList());
-        }
-        catch (RuntimeException e) {
-            throw new TrinoException(HIVE_METASTORE_ERROR, "Failed to list views in database: " + databaseName, e);
-        }
+        // Views are not supported by Polaris REST API
+        return ImmutableList.of();
     }
 
     @Override
@@ -219,12 +215,7 @@ public class PolarisHiveMetastore
     @Override
     public void dropDatabase(String databaseName, boolean deleteData)
     {
-        try {
-            polarisClient.dropNamespace(databaseName);
-        }
-        catch (RuntimeException e) {
-            throw new TrinoException(HIVE_METASTORE_ERROR, "Failed to drop database: " + databaseName, e);
-        }
+        throw new TrinoException(NOT_SUPPORTED, "Drop database is not supported by Polaris");
     }
 
     @Override
@@ -289,10 +280,8 @@ public class PolarisHiveMetastore
 
     private void createIcebergTable(String databaseName, String tableName, Table table)
     {
-        // For Iceberg tables, we need to create through the Iceberg REST API
-        // Convert Hive table to Iceberg table format
-        Map<String, Object> icebergTable = convertHiveToIcebergTable(table);
-        polarisClient.createTable(databaseName, tableName, icebergTable);
+        Map<String, Object> tableRequest = convertHiveToIcebergTable(table);
+        polarisClient.createIcebergTable(databaseName, tableName, tableRequest);
     }
 
     private void createGenericTable(String databaseName, String tableName, Table table)
@@ -415,21 +404,21 @@ public class PolarisHiveMetastore
     @Override
     public void dropTable(String databaseName, String tableName, boolean deleteData)
     {
-        // Try to drop from both Iceberg and generic table APIs
         try {
-            if (polarisClient.tableExists(databaseName, tableName)) {
-                polarisClient.dropTable(databaseName, tableName, deleteData);
+            // Try to drop as Iceberg table first
+            try {
+                polarisClient.dropIcebergTable(databaseName, tableName, deleteData);
                 return;
             }
-        }
-        catch (RuntimeException e) {
-            // Fall through to try generic tables
-        }
-
-        try {
-            if (polarisClient.genericTableExists(databaseName, tableName)) {
-                polarisClient.dropGenericTable(databaseName, tableName);
+            catch (PolarisNotFoundException ignored) {
+                // Fall through to try generic table
             }
+
+            // Try to drop as generic table
+            polarisClient.dropGenericTable(databaseName, tableName);
+        }
+        catch (PolarisNotFoundException e) {
+            throw new TableNotFoundException(new SchemaTableName(databaseName, tableName));
         }
         catch (RuntimeException e) {
             throw new TrinoException(HIVE_METASTORE_ERROR, "Failed to drop table: " + databaseName + "." + tableName, e);
@@ -446,10 +435,20 @@ public class PolarisHiveMetastore
     public void renameTable(String databaseName, String tableName, String newDatabaseName, String newTableName)
     {
         try {
-            polarisClient.renameTable(databaseName, tableName, newDatabaseName, newTableName);
+            // Try to rename as Iceberg table first
+            try {
+                polarisClient.renameIcebergTable(databaseName, tableName, newDatabaseName, newTableName);
+                return;
+            }
+            catch (PolarisNotFoundException ignored) {
+                // Fall through - table might be a generic table
+            }
+
+            // Generic table rename is not supported by Polaris API
+            throw new TrinoException(NOT_SUPPORTED, "Rename table is not supported for Delta Lake tables in Polaris");
         }
         catch (RuntimeException e) {
-            throw new TrinoException(HIVE_METASTORE_ERROR, "Failed to rename table", e);
+            throw new TrinoException(HIVE_METASTORE_ERROR, "Failed to rename table: " + databaseName + "." + tableName, e);
         }
     }
 
