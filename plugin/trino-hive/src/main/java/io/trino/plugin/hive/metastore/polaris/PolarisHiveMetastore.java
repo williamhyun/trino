@@ -51,6 +51,7 @@ import java.util.Set;
 
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static io.trino.plugin.hive.HiveErrorCode.HIVE_METASTORE_ERROR;
+import static io.trino.spi.StandardErrorCode.ALREADY_EXISTS;
 import static io.trino.spi.StandardErrorCode.NOT_SUPPORTED;
 import static java.util.Objects.requireNonNull;
 
@@ -241,7 +242,174 @@ public class PolarisHiveMetastore
     @Override
     public void createTable(Table table, PrincipalPrivileges principalPrivileges)
     {
-        throw new TrinoException(NOT_SUPPORTED, "Table creation is not yet supported");
+        try {
+            String databaseName = table.getDatabaseName();
+            String tableName = table.getTableName();
+
+            // Detect table format based on table parameters
+            String tableFormat = detectTableFormat(table);
+
+            switch (tableFormat) {
+                case "ICEBERG" -> createIcebergTable(databaseName, tableName, table);
+                case "DELTA" -> createGenericTable(databaseName, tableName, table);
+                default -> throw new TrinoException(NOT_SUPPORTED, "Unsupported table format: " + tableFormat);
+            }
+        }
+        catch (PolarisAlreadyExistsException e) {
+            throw new TrinoException(ALREADY_EXISTS, "Table already exists: " + table.getDatabaseName() + "." + table.getTableName(), e);
+        }
+        catch (RuntimeException e) {
+            throw new TrinoException(HIVE_METASTORE_ERROR, "Failed to create table: " + table.getDatabaseName() + "." + table.getTableName(), e);
+        }
+    }
+
+    private String detectTableFormat(Table table)
+    {
+        Map<String, String> parameters = table.getParameters();
+
+        // Check for Iceberg table indicators
+        if (parameters.containsKey("table_type") && "ICEBERG".equals(parameters.get("table_type"))) {
+            return "ICEBERG";
+        }
+        if (parameters.containsKey("metadata_location")) {
+            return "ICEBERG";
+        }
+
+        // Check for Delta Lake table indicators
+        if (parameters.containsKey("spark.sql.sources.provider") && "DELTA".equals(parameters.get("spark.sql.sources.provider"))) {
+            return "DELTA";
+        }
+        if (parameters.containsKey("spark.sql.sources.provider") && "delta".equalsIgnoreCase(parameters.get("spark.sql.sources.provider"))) {
+            return "DELTA";
+        }
+
+        // Default to Delta Lake for generic tables
+        return "DELTA";
+    }
+
+    private void createIcebergTable(String databaseName, String tableName, Table table)
+    {
+        // For Iceberg tables, we need to create through the Iceberg REST API
+        // Convert Hive table to Iceberg table format
+        Map<String, Object> icebergTable = convertHiveToIcebergTable(table);
+        polarisClient.createTable(databaseName, tableName, icebergTable);
+    }
+
+    private void createGenericTable(String databaseName, String tableName, Table table)
+    {
+        // For Delta Lake and other generic tables, use the generic table API
+        PolarisGenericTable genericTable = convertHiveToGenericTable(table);
+        polarisClient.createGenericTable(databaseName, genericTable);
+    }
+
+    private Map<String, Object> convertHiveToIcebergTable(Table table)
+    {
+        // Convert Hive table to Iceberg table format
+        String location = table.getStorage().getLocation();
+
+        // Convert columns to Iceberg schema
+        Map<String, Object> schema = convertHiveColumnsToIcebergSchema(table.getDataColumns());
+
+        // Build Iceberg table request
+        return ImmutableMap.<String, Object>builder()
+                .put("name", table.getTableName())
+                .put("location", location)
+                .put("schema", schema)
+                .put("properties", table.getParameters())
+                .build();
+    }
+
+    private PolarisGenericTable convertHiveToGenericTable(Table table)
+    {
+        String location = table.getStorage().getLocation();
+
+        // Convert columns to Polaris schema
+        PolarisSchema schema = convertHiveColumnsToGenericSchema(table.getDataColumns());
+
+        return new PolarisGenericTable(
+                table.getTableName(),
+                location,
+                schema,
+                table.getParameters());
+    }
+
+    private Map<String, Object> convertHiveColumnsToIcebergSchema(List<Column> columns)
+    {
+        List<Map<String, Object>> fields = columns.stream()
+                .map(this::convertHiveColumnToIcebergField)
+                .collect(toImmutableList());
+
+        return ImmutableMap.of(
+                "type", "struct",
+                "schema-id", 0,
+                "fields", fields);
+    }
+
+    private Map<String, Object> convertHiveColumnToIcebergField(Column column)
+    {
+        return ImmutableMap.<String, Object>builder()
+                .put("id", column.getName().hashCode()) // Simple ID generation
+                .put("name", column.getName())
+                .put("required", true) // Default to required
+                .put("type", convertHiveTypeToIcebergType(column.getType()))
+                .build();
+    }
+
+    private String convertHiveTypeToIcebergType(HiveType hiveType)
+    {
+        String typeName = hiveType.getHiveTypeName().toString().toLowerCase();
+        return switch (typeName) {
+            case "boolean" -> "boolean";
+            case "tinyint" -> "int";
+            case "smallint" -> "int";
+            case "int" -> "int";
+            case "bigint" -> "long";
+            case "float" -> "float";
+            case "double" -> "double";
+            case "string" -> "string";
+            case "binary" -> "binary";
+            case "date" -> "date";
+            case "timestamp" -> "timestamp";
+            default -> "string"; // Default fallback
+        };
+    }
+
+    private PolarisSchema convertHiveColumnsToGenericSchema(List<Column> columns)
+    {
+        List<PolarisSchema.PolarisField> fields = columns.stream()
+                .map(this::convertHiveColumnToGenericField)
+                .collect(toImmutableList());
+
+        return new PolarisSchema(1, fields);
+    }
+
+    private PolarisSchema.PolarisField convertHiveColumnToGenericField(Column column)
+    {
+        return new PolarisSchema.PolarisField(
+                column.getName().hashCode(), // Simple ID generation
+                column.getName(),
+                true, // Default to required
+                convertHiveTypeToGenericType(column.getType()),
+                ImmutableMap.of());
+    }
+
+    private String convertHiveTypeToGenericType(HiveType hiveType)
+    {
+        String typeName = hiveType.getHiveTypeName().toString().toLowerCase();
+        return switch (typeName) {
+            case "boolean" -> "boolean";
+            case "tinyint" -> "byte";
+            case "smallint" -> "short";
+            case "int" -> "integer";
+            case "bigint" -> "long";
+            case "float" -> "float";
+            case "double" -> "double";
+            case "string" -> "string";
+            case "binary" -> "binary";
+            case "date" -> "date";
+            case "timestamp" -> "timestamp";
+            default -> "string"; // Default fallback
+        };
     }
 
     @Override
