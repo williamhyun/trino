@@ -15,13 +15,11 @@ package io.trino.plugin.hive.metastore.polaris;
 
 import io.airlift.configuration.Config;
 import io.airlift.configuration.ConfigDescription;
-import io.airlift.configuration.ConfigSecuritySensitive;
 import io.airlift.units.Duration;
 import io.airlift.units.MinDuration;
 import jakarta.validation.constraints.NotNull;
 
 import java.net.URI;
-import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.TimeUnit;
 
@@ -30,6 +28,12 @@ import java.util.concurrent.TimeUnit;
  */
 public class PolarisMetastoreConfig
 {
+    public enum Security
+    {
+        NONE,
+        OAUTH2
+    }
+
     private URI uri;
     private String prefix = "";
     private String warehouse;
@@ -38,13 +42,8 @@ public class PolarisMetastoreConfig
     private int maxRetries = 3;
     private Duration retryDelay = new Duration(1, TimeUnit.SECONDS);
 
-    // Authentication configuration
-    private String authType = "NONE";
-    private String clientId;
-    private String clientSecret;
-    private String token;
-    private URI oauthTokenUri;
-    private String scope;
+    // Security configuration
+    private Security security = Security.NONE;
 
     // SSL configuration
     private boolean verifySSL = true;
@@ -155,101 +154,16 @@ public class PolarisMetastoreConfig
         return this;
     }
 
-    public String getAuthType()
+    public Security getSecurity()
     {
-        return authType;
+        return security;
     }
 
-    @Config("polaris.auth-type")
-    @ConfigDescription("Authentication type: NONE, OAUTH2, or BEARER_TOKEN")
-    public PolarisMetastoreConfig setAuthType(String authType)
+    @Config("polaris.security")
+    @ConfigDescription("Security type: NONE or OAUTH2")
+    public PolarisMetastoreConfig setSecurity(Security security)
     {
-        this.authType = authType;
-        return this;
-    }
-
-    public Optional<String> getClientId()
-    {
-        return Optional.ofNullable(clientId);
-    }
-
-    @Config("polaris.oauth2.client-id")
-    @ConfigDescription("OAuth2 client ID for authentication")
-    public PolarisMetastoreConfig setClientId(String clientId)
-    {
-        this.clientId = clientId;
-        return this;
-    }
-
-    public Optional<String> getClientSecret()
-    {
-        return Optional.ofNullable(clientSecret);
-    }
-
-    @Config("polaris.oauth2.client-secret")
-    @ConfigDescription("OAuth2 client secret for authentication")
-    @ConfigSecuritySensitive
-    public PolarisMetastoreConfig setClientSecret(String clientSecret)
-    {
-        this.clientSecret = clientSecret;
-        return this;
-    }
-
-    public Optional<String> getToken()
-    {
-        return Optional.ofNullable(token);
-    }
-
-    @Config("polaris.token")
-    @ConfigDescription("Bearer token for authentication")
-    @ConfigSecuritySensitive
-    public PolarisMetastoreConfig setToken(String token)
-    {
-        this.token = token;
-        return this;
-    }
-
-    // Alias for getBearerToken to maintain compatibility
-    public Optional<String> getBearerToken()
-    {
-        return getToken();
-    }
-
-    // Alias for OAuth2 token to maintain compatibility
-    public Optional<String> getOauth2Token()
-    {
-        return getToken();
-    }
-
-    // Extra headers support
-    public Optional<Map<String, String>> getExtraHeaders()
-    {
-        return Optional.empty(); // No extra headers by default
-    }
-
-    public Optional<URI> getOauthTokenUri()
-    {
-        return Optional.ofNullable(oauthTokenUri);
-    }
-
-    @Config("polaris.oauth2.token-uri")
-    @ConfigDescription("OAuth2 token endpoint URI")
-    public PolarisMetastoreConfig setOauthTokenUri(URI oauthTokenUri)
-    {
-        this.oauthTokenUri = oauthTokenUri;
-        return this;
-    }
-
-    public Optional<String> getScope()
-    {
-        return Optional.ofNullable(scope);
-    }
-
-    @Config("polaris.oauth2.scope")
-    @ConfigDescription("OAuth2 scope for authentication")
-    public PolarisMetastoreConfig setScope(String scope)
-    {
-        this.scope = scope;
+        this.security = security;
         return this;
     }
 
@@ -286,7 +200,6 @@ public class PolarisMetastoreConfig
 
     @Config("polaris.ssl.trust-store-password")
     @ConfigDescription("Password for SSL trust store")
-    @ConfigSecuritySensitive
     public PolarisMetastoreConfig setTrustStorePassword(String trustStorePassword)
     {
         this.trustStorePassword = trustStorePassword;
@@ -313,7 +226,6 @@ public class PolarisMetastoreConfig
 
     @Config("polaris.ssl.key-store-password")
     @ConfigDescription("Password for SSL key store")
-    @ConfigSecuritySensitive
     public PolarisMetastoreConfig setKeyStorePassword(String keyStorePassword)
     {
         this.keyStorePassword = keyStorePassword;
