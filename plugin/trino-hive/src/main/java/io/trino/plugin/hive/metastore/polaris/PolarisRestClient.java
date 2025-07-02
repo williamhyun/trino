@@ -13,7 +13,6 @@
  */
 package io.trino.plugin.hive.metastore.polaris;
 
-import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.common.collect.ImmutableList;
@@ -26,11 +25,18 @@ import io.airlift.http.client.HttpClient;
 import io.airlift.http.client.Request;
 import io.airlift.http.client.ResponseHandler;
 import io.airlift.http.client.StaticBodyGenerator;
+import org.apache.iceberg.catalog.Namespace;
+import org.apache.iceberg.catalog.SessionCatalog;
+import org.apache.iceberg.catalog.TableIdentifier;
+import org.apache.iceberg.exceptions.NoSuchTableException;
+import org.apache.iceberg.exceptions.RESTException;
+import org.apache.iceberg.rest.RESTSessionCatalog;
 
 import java.net.URI;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.UUID;
 
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static io.airlift.http.client.Request.Builder.prepareDelete;
@@ -42,440 +48,186 @@ import static java.util.Objects.requireNonNull;
 
 /**
  * REST client for Apache Polaris catalog API.
- * Handles both standard Iceberg REST API and Polaris-specific extensions.
+ *
+ * This client follows the TrinoRestCatalog pattern:
+ * - Delegates standard Iceberg operations to RESTSessionCatalog
+ * - Uses direct HttpClient for Polaris-specific Generic Table operations
+ * - Provides unified interface for both Iceberg and Delta Lake table operations
  */
 public class PolarisRestClient
 {
+    private final RESTSessionCatalog restSessionCatalog;
     private final HttpClient httpClient;
     private final PolarisMetastoreConfig config;
     private final ObjectMapper objectMapper;
 
     @Inject
     public PolarisRestClient(
-            HttpClient httpClient,
+            RESTSessionCatalog restSessionCatalog,
+            @ForPolarisClient HttpClient httpClient,
             PolarisMetastoreConfig config,
             ObjectMapper objectMapper)
     {
+        this.restSessionCatalog = requireNonNull(restSessionCatalog, "restSessionCatalog is null");
         this.httpClient = requireNonNull(httpClient, "httpClient is null");
         this.config = requireNonNull(config, "config is null");
         this.objectMapper = requireNonNull(objectMapper, "objectMapper is null");
     }
 
-    // Namespace Operations
+    // ICEBERG OPERATIONS (via RESTSessionCatalog)
 
+    /**
+     * Lists Iceberg tables using the standard REST catalog
+     */
+    public List<PolarisTableIdentifier> listIcebergTables(String namespaceName)
+    {
+        try {
+            SessionCatalog.SessionContext sessionContext = createSessionContext();
+            Namespace namespace = Namespace.of(namespaceName.split("\\."));
+
+            return restSessionCatalog.listTables(sessionContext, namespace).stream()
+                    .map(id -> new PolarisTableIdentifier(id.namespace().toString(), id.name()))
+                    .collect(toImmutableList());
+        }
+        catch (RESTException e) {
+            throw new PolarisException("Failed to list Iceberg tables: " + e.getMessage(), e);
+        }
+    }
+
+    /**
+     * Loads Iceberg table metadata using the standard REST catalog
+     */
+    public PolarisTableMetadata loadIcebergTable(String namespaceName, String tableName)
+    {
+        try {
+            SessionCatalog.SessionContext sessionContext = createSessionContext();
+            TableIdentifier tableId = TableIdentifier.of(namespaceName, tableName);
+
+            org.apache.iceberg.Table table = restSessionCatalog.loadTable(sessionContext, tableId);
+            return convertIcebergTableToPolaris(table);
+        }
+        catch (NoSuchTableException e) {
+            throw new PolarisNotFoundException("Iceberg table not found: " + namespaceName + "." + tableName);
+        }
+        catch (RESTException e) {
+            throw new PolarisException("Failed to load Iceberg table: " + e.getMessage(), e);
+        }
+    }
+
+    /**
+     * Creates Iceberg table using the standard REST catalog
+     */
+    public PolarisTableMetadata createIcebergTable(String namespaceName, String tableName, Map<String, Object> tableRequest)
+    {
+        try {
+            SessionCatalog.SessionContext sessionContext = createSessionContext();
+            TableIdentifier tableId = TableIdentifier.of(namespaceName, tableName);
+
+            // Extract schema and other properties from tableRequest
+            org.apache.iceberg.Schema schema = extractSchemaFromRequest(tableRequest);
+            org.apache.iceberg.PartitionSpec partitionSpec = extractPartitionSpecFromRequest(tableRequest);
+            Map<String, String> properties = extractPropertiesFromRequest(tableRequest);
+
+            org.apache.iceberg.Table table = restSessionCatalog.buildTable(sessionContext, tableId, schema)
+                    .withPartitionSpec(partitionSpec)
+                    .withProperties(properties)
+                    .create();
+
+            return convertIcebergTableToPolaris(table);
+        }
+        catch (RESTException e) {
+            throw new PolarisException("Failed to create Iceberg table: " + e.getMessage(), e);
+        }
+    }
+
+    /**
+     * Renames Iceberg table using the standard REST catalog
+     */
+    public void renameIcebergTable(String sourceNamespace, String sourceTable, String destNamespace, String destTable)
+    {
+        try {
+            SessionCatalog.SessionContext sessionContext = createSessionContext();
+            TableIdentifier sourceId = TableIdentifier.of(sourceNamespace, sourceTable);
+            TableIdentifier destId = TableIdentifier.of(destNamespace, destTable);
+
+            restSessionCatalog.renameTable(sessionContext, sourceId, destId);
+        }
+        catch (NoSuchTableException e) {
+            throw new PolarisNotFoundException("Iceberg table not found: " + sourceNamespace + "." + sourceTable);
+        }
+        catch (RESTException e) {
+            throw new PolarisException("Failed to rename Iceberg table: " + e.getMessage(), e);
+        }
+    }
+
+    /**
+     * Drops Iceberg table using the standard REST catalog
+     */
+    public void dropIcebergTable(String namespaceName, String tableName, boolean purgeRequested)
+    {
+        try {
+            SessionCatalog.SessionContext sessionContext = createSessionContext();
+            TableIdentifier tableId = TableIdentifier.of(namespaceName, tableName);
+
+            if (purgeRequested) {
+                restSessionCatalog.purgeTable(sessionContext, tableId);
+            }
+            else {
+                restSessionCatalog.dropTable(sessionContext, tableId);
+            }
+        }
+        catch (NoSuchTableException e) {
+            throw new PolarisNotFoundException("Iceberg table not found: " + namespaceName + "." + tableName);
+        }
+        catch (RESTException e) {
+            throw new PolarisException("Failed to drop Iceberg table: " + e.getMessage(), e);
+        }
+    }
+
+    // NAMESPACE OPERATIONS (via RESTSessionCatalog)
+
+    /**
+     * Lists namespaces using the standard REST catalog
+     */
     public List<PolarisNamespace> listNamespaces(Optional<String> parent)
     {
-        URI uri = buildUri("/v1/" + config.getPrefix() + "/namespaces")
-                .addParameter("parent", parent.orElse(null))
-                .build();
+        try {
+            SessionCatalog.SessionContext sessionContext = createSessionContext();
+            Namespace parentNamespace = parent.map(p -> Namespace.of(p.split("\\."))).orElse(Namespace.empty());
 
-        Request request = prepareGet()
-                .setUri(uri)
-                .addHeaders(buildHeaders(getAuthHeaders()))
-                .build();
-
-        return execute(request, new ResponseHandler<List<PolarisNamespace>, RuntimeException>()
-        {
-            @Override
-            public List<PolarisNamespace> handleException(Request request, Exception exception)
-            {
-                throw new PolarisException("Failed to list namespaces: " + exception.getMessage(), exception);
-            }
-
-            @Override
-            public List<PolarisNamespace> handle(Request request, io.airlift.http.client.Response response)
-            {
-                try {
-                    JsonNode root = objectMapper.readTree(response.getInputStream());
-                    JsonNode namespacesNode = root.get("namespaces");
-
-                    ImmutableList.Builder<PolarisNamespace> namespaces = ImmutableList.builder();
-                    if (namespacesNode != null && namespacesNode.isArray()) {
-                        for (JsonNode namespaceNode : namespacesNode) {
-                            String namespaceName = String.join(".",
-                                    objectMapper.convertValue(namespaceNode, String[].class));
-                            namespaces.add(new PolarisNamespace(namespaceName, ImmutableMap.of()));
-                        }
-                    }
-                    return namespaces.build();
-                }
-                catch (Exception e) {
-                    throw new PolarisException("Failed to parse namespaces response", e);
-                }
-            }
-        });
+            return restSessionCatalog.listNamespaces(sessionContext, parentNamespace).stream()
+                    .map(ns -> new PolarisNamespace(ns.toString(), ImmutableMap.of()))
+                    .collect(toImmutableList());
+        }
+        catch (RESTException e) {
+            throw new PolarisException("Failed to list namespaces: " + e.getMessage(), e);
+        }
     }
 
-    public PolarisNamespace getNamespace(String namespaceName)
-    {
-        URI uri = buildUri("/v1/" + config.getPrefix() + "/namespaces/" + encodeNamespace(namespaceName))
-                .build();
-
-        Request request = prepareGet()
-                .setUri(uri)
-                .addHeaders(buildHeaders(getAuthHeaders()))
-                .build();
-
-        return execute(request, new ResponseHandler<PolarisNamespace, RuntimeException>()
-        {
-            @Override
-            public PolarisNamespace handleException(Request request, Exception exception)
-            {
-                throw new PolarisException("Failed to get namespace: " + exception.getMessage(), exception);
-            }
-
-            @Override
-            public PolarisNamespace handle(Request request, io.airlift.http.client.Response response)
-            {
-                try {
-                    if (response.getStatusCode() == 404) {
-                        throw new PolarisNotFoundException("Namespace not found: " + namespaceName);
-                    }
-
-                    JsonNode root = objectMapper.readTree(response.getInputStream());
-                    JsonNode propertiesNode = root.get("properties");
-
-                    Map<String, String> properties = ImmutableMap.of();
-                    if (propertiesNode != null) {
-                        properties = objectMapper.convertValue(propertiesNode, new TypeReference<Map<String, String>>() {});
-                    }
-
-                    return new PolarisNamespace(namespaceName, properties);
-                }
-                catch (Exception e) {
-                    throw new PolarisException("Failed to parse namespace response", e);
-                }
-            }
-        });
-    }
-
+    /**
+     * Creates namespace using the standard REST catalog
+     */
     public void createNamespace(PolarisNamespace namespace)
     {
-        URI uri = buildUri("/v1/" + config.getPrefix() + "/namespaces").build();
+        try {
+            SessionCatalog.SessionContext sessionContext = createSessionContext();
+            Namespace ns = Namespace.of(namespace.getName().split("\\."));
 
-        Map<String, Object> requestBody = ImmutableMap.of(
-                "namespace", namespace.getName().split("\\."),
-                "properties", namespace.getProperties());
-
-        Request request = preparePost()
-                .setUri(uri)
-                .addHeaders(buildHeaders(getAuthHeaders()))
-                .addHeader("Content-Type", "application/json")
-                .setBodyGenerator(createJsonBodyGenerator(requestBody))
-                .build();
-
-        execute(request, new ResponseHandler<Void, RuntimeException>()
-        {
-            @Override
-            public Void handleException(Request request, Exception exception)
-            {
-                throw new PolarisException("Failed to create namespace: " + exception.getMessage(), exception);
-            }
-
-            @Override
-            public Void handle(Request request, io.airlift.http.client.Response response)
-            {
-                if (response.getStatusCode() == 409) {
-                    throw new PolarisAlreadyExistsException("Namespace already exists: " + namespace.getName());
-                }
-                return null;
-            }
-        });
+            restSessionCatalog.createNamespace(sessionContext, ns, namespace.getProperties());
+        }
+        catch (RESTException e) {
+            throw new PolarisException("Failed to create namespace: " + e.getMessage(), e);
+        }
     }
 
-    public void dropNamespace(String namespaceName)
-    {
-        URI uri = buildUri("/v1/" + config.getPrefix() + "/namespaces/" + encodeNamespace(namespaceName))
-                .build();
+    // GENERIC TABLE OPERATIONS (via HttpClient)
 
-        Request request = prepareDelete()
-                .setUri(uri)
-                .addHeaders(buildHeaders(getAuthHeaders()))
-                .build();
-
-        execute(request, new ResponseHandler<Void, RuntimeException>()
-        {
-            @Override
-            public Void handleException(Request request, Exception exception)
-            {
-                throw new PolarisException("Failed to drop namespace: " + exception.getMessage(), exception);
-            }
-
-            @Override
-            public Void handle(Request request, io.airlift.http.client.Response response)
-            {
-                if (response.getStatusCode() == 404) {
-                    throw new PolarisNotFoundException("Namespace not found: " + namespaceName);
-                }
-                return null;
-            }
-        });
-    }
-
-    public void updateNamespaceProperties(String namespaceName, Map<String, String> updates, List<String> removals)
-    {
-        URI uri = buildUri("/v1/" + config.getPrefix() + "/namespaces/" + encodeNamespace(namespaceName) + "/properties")
-                .build();
-
-        Map<String, Object> requestBody = ImmutableMap.of(
-                "updates", updates,
-                "removals", removals);
-
-        Request request = preparePost()
-                .setUri(uri)
-                .addHeaders(buildHeaders(getAuthHeaders()))
-                .addHeader("Content-Type", "application/json")
-                .setBodyGenerator(createJsonBodyGenerator(requestBody))
-                .build();
-
-        execute(request, new ResponseHandler<Void, RuntimeException>()
-        {
-            @Override
-            public Void handleException(Request request, Exception exception)
-            {
-                throw new PolarisException("Failed to update namespace properties: " + exception.getMessage(), exception);
-            }
-
-            @Override
-            public Void handle(Request request, io.airlift.http.client.Response response)
-            {
-                if (response.getStatusCode() == 404) {
-                    throw new PolarisNotFoundException("Namespace not found: " + namespaceName);
-                }
-                return null;
-            }
-        });
-    }
-
-    // Iceberg Table Operations
-
-    public List<PolarisTableIdentifier> listTables(String namespaceName)
-    {
-        URI uri = buildUri("/v1/" + config.getPrefix() + "/namespaces/" + encodeNamespace(namespaceName) + "/tables")
-                .build();
-
-        Request request = prepareGet()
-                .setUri(uri)
-                .addHeaders(buildHeaders(getAuthHeaders()))
-                .build();
-
-        return execute(request, new ResponseHandler<List<PolarisTableIdentifier>, RuntimeException>()
-        {
-            @Override
-            public List<PolarisTableIdentifier> handleException(Request request, Exception exception)
-            {
-                throw new PolarisException("Failed to list tables: " + exception.getMessage(), exception);
-            }
-
-            @Override
-            public List<PolarisTableIdentifier> handle(Request request, io.airlift.http.client.Response response)
-            {
-                try {
-                    if (response.getStatusCode() == 404) {
-                        throw new PolarisNotFoundException("Namespace not found: " + namespaceName);
-                    }
-
-                    JsonNode root = objectMapper.readTree(response.getInputStream());
-                    JsonNode identifiersNode = root.get("identifiers");
-
-                    ImmutableList.Builder<PolarisTableIdentifier> tables = ImmutableList.builder();
-                    if (identifiersNode != null && identifiersNode.isArray()) {
-                        for (JsonNode identifierNode : identifiersNode) {
-                            JsonNode namespaceNode = identifierNode.get("namespace");
-                            JsonNode nameNode = identifierNode.get("name");
-
-                            if (namespaceNode != null && nameNode != null) {
-                                String[] namespaceArray = objectMapper.convertValue(namespaceNode, String[].class);
-                                String namespace = String.join(".", namespaceArray);
-                                String name = nameNode.asText();
-                                tables.add(new PolarisTableIdentifier(namespace, name));
-                            }
-                        }
-                    }
-                    return tables.build();
-                }
-                catch (Exception e) {
-                    throw new PolarisException("Failed to parse tables response", e);
-                }
-            }
-        });
-    }
-
-    public PolarisTableMetadata loadTable(String namespaceName, String tableName)
-    {
-        URI uri = buildUri("/v1/" + config.getPrefix() + "/namespaces/" + encodeNamespace(namespaceName) + "/tables/" + tableName)
-                .build();
-
-        Request request = prepareGet()
-                .setUri(uri)
-                .addHeaders(buildHeaders(getAuthHeaders()))
-                .build();
-
-        return execute(request, new ResponseHandler<PolarisTableMetadata, RuntimeException>()
-        {
-            @Override
-            public PolarisTableMetadata handleException(Request request, Exception exception)
-            {
-                throw new PolarisException("Failed to load table: " + exception.getMessage(), exception);
-            }
-
-            @Override
-            public PolarisTableMetadata handle(Request request, io.airlift.http.client.Response response)
-            {
-                try {
-                    if (response.getStatusCode() == 404) {
-                        throw new PolarisNotFoundException("Table not found: " + namespaceName + "." + tableName);
-                    }
-
-                    JsonNode root = objectMapper.readTree(response.getInputStream());
-                    return parseTableMetadata(root);
-                }
-                catch (Exception e) {
-                    throw new PolarisException("Failed to parse table metadata response", e);
-                }
-            }
-        });
-    }
-
-    public boolean tableExists(String namespaceName, String tableName)
-    {
-        URI uri = buildUri("/v1/" + config.getPrefix() + "/namespaces/" + encodeNamespace(namespaceName) + "/tables/" + tableName)
-                .build();
-
-        Request request = prepareHead()
-                .setUri(uri)
-                .addHeaders(buildHeaders(getAuthHeaders()))
-                .build();
-
-        return execute(request, new ResponseHandler<Boolean, RuntimeException>()
-        {
-            @Override
-            public Boolean handleException(Request request, Exception exception)
-            {
-                throw new PolarisException("Failed to check table existence: " + exception.getMessage(), exception);
-            }
-
-            @Override
-            public Boolean handle(Request request, io.airlift.http.client.Response response)
-            {
-                return response.getStatusCode() == 200;
-            }
-        });
-    }
-
-    public void dropTable(String namespaceName, String tableName, boolean purgeRequested)
-    {
-        URI uri = buildUri("/v1/" + config.getPrefix() + "/namespaces/" + encodeNamespace(namespaceName) + "/tables/" + tableName)
-                .addParameter("purgeRequested", String.valueOf(purgeRequested))
-                .build();
-
-        Request request = prepareDelete()
-                .setUri(uri)
-                .addHeaders(buildHeaders(getAuthHeaders()))
-                .build();
-
-        execute(request, new ResponseHandler<Void, RuntimeException>()
-        {
-            @Override
-            public Void handleException(Request request, Exception exception)
-            {
-                throw new PolarisException("Failed to drop table: " + exception.getMessage(), exception);
-            }
-
-            @Override
-            public Void handle(Request request, io.airlift.http.client.Response response)
-            {
-                if (response.getStatusCode() == 404) {
-                    throw new PolarisNotFoundException("Table not found: " + namespaceName + "." + tableName);
-                }
-                return null;
-            }
-        });
-    }
-
-    public void renameTable(String sourceNamespace, String sourceTable, String destNamespace, String destTable)
-    {
-        URI uri = buildUri("/v1/" + config.getPrefix() + "/namespaces/" + encodeNamespace(sourceNamespace) + "/tables/" + sourceTable + "/rename")
-                .build();
-
-        Map<String, Object> requestBody = ImmutableMap.of(
-                "source", ImmutableMap.of(
-                        "namespace", sourceNamespace.split("\\."),
-                        "name", sourceTable),
-                "destination", ImmutableMap.of(
-                        "namespace", destNamespace.split("\\."),
-                        "name", destTable));
-
-        Request request = preparePost()
-                .setUri(uri)
-                .addHeaders(buildHeaders(getAuthHeaders()))
-                .addHeader("Content-Type", "application/json")
-                .setBodyGenerator(createJsonBodyGenerator(requestBody))
-                .build();
-
-        execute(request, new ResponseHandler<Void, RuntimeException>()
-        {
-            @Override
-            public Void handleException(Request request, Exception exception)
-            {
-                throw new PolarisException("Failed to rename table: " + exception.getMessage(), exception);
-            }
-
-            @Override
-            public Void handle(Request request, io.airlift.http.client.Response response)
-            {
-                if (response.getStatusCode() == 404) {
-                    throw new PolarisNotFoundException("Table not found: " + sourceNamespace + "." + sourceTable);
-                }
-                return null;
-            }
-        });
-    }
-
-    public PolarisTableMetadata createTable(String namespaceName, String tableName, Map<String, Object> tableRequest)
-    {
-        URI uri = buildUri("/v1/" + config.getPrefix() + "/namespaces/" + encodeNamespace(namespaceName) + "/tables")
-                .build();
-
-        Request request = preparePost()
-                .setUri(uri)
-                .addHeaders(buildHeaders(getAuthHeaders()))
-                .addHeader("Content-Type", "application/json")
-                .setBodyGenerator(createJsonBodyGenerator(tableRequest))
-                .build();
-
-        return execute(request, new ResponseHandler<PolarisTableMetadata, RuntimeException>()
-        {
-            @Override
-            public PolarisTableMetadata handleException(Request request, Exception exception)
-            {
-                throw new PolarisException("Failed to create table: " + exception.getMessage(), exception);
-            }
-
-            @Override
-            public PolarisTableMetadata handle(Request request, io.airlift.http.client.Response response)
-            {
-                try {
-                    if (response.getStatusCode() == 409) {
-                        throw new PolarisAlreadyExistsException("Table already exists: " + namespaceName + "." + tableName);
-                    }
-
-                    JsonNode root = objectMapper.readTree(response.getInputStream());
-                    return parseTableMetadata(root);
-                }
-                catch (Exception e) {
-                    throw new PolarisException("Failed to parse create table response", e);
-                }
-            }
-        });
-    }
-
-    // Generic Table Operations
-
+    /**
+     * Lists Generic (Delta Lake) tables using Polaris-specific API
+     */
     public List<PolarisTableIdentifier> listGenericTables(String namespaceName)
     {
-        URI uri = buildUri("/polaris/v1/" + config.getPrefix() + "/namespaces/" + encodeNamespace(namespaceName) + "/tables")
-                .build();
+        URI uri = buildUri("/polaris/v1/" + config.getPrefix() + "/namespaces/" + encodeNamespace(namespaceName) + "/tables");
 
         Request request = prepareGet()
                 .setUri(uri)
@@ -521,8 +273,7 @@ public class PolarisRestClient
 
     public PolarisGenericTable loadGenericTable(String namespaceName, String tableName)
     {
-        URI uri = buildUri("/polaris/v1/" + config.getPrefix() + "/namespaces/" + encodeNamespace(namespaceName) + "/tables/" + tableName)
-                .build();
+        URI uri = buildUri("/polaris/v1/" + config.getPrefix() + "/namespaces/" + encodeNamespace(namespaceName) + "/tables/" + tableName);
 
         Request request = prepareGet()
                 .setUri(uri)
@@ -557,8 +308,7 @@ public class PolarisRestClient
 
     public PolarisGenericTable createGenericTable(String namespaceName, PolarisGenericTable table)
     {
-        URI uri = buildUri("/polaris/v1/" + config.getPrefix() + "/namespaces/" + encodeNamespace(namespaceName) + "/tables")
-                .build();
+        URI uri = buildUri("/polaris/v1/" + config.getPrefix() + "/namespaces/" + encodeNamespace(namespaceName) + "/tables");
 
         Request request = preparePost()
                 .setUri(uri)
@@ -595,8 +345,7 @@ public class PolarisRestClient
 
     public boolean genericTableExists(String namespaceName, String tableName)
     {
-        URI uri = buildUri("/polaris/v1/" + config.getPrefix() + "/namespaces/" + encodeNamespace(namespaceName) + "/tables/" + tableName)
-                .build();
+        URI uri = buildUri("/polaris/v1/" + config.getPrefix() + "/namespaces/" + encodeNamespace(namespaceName) + "/tables/" + tableName);
 
         Request request = prepareHead()
                 .setUri(uri)
@@ -621,8 +370,7 @@ public class PolarisRestClient
 
     public void dropGenericTable(String namespaceName, String tableName)
     {
-        URI uri = buildUri("/polaris/v1/" + config.getPrefix() + "/namespaces/" + encodeNamespace(namespaceName) + "/tables/" + tableName)
-                .build();
+        URI uri = buildUri("/polaris/v1/" + config.getPrefix() + "/namespaces/" + encodeNamespace(namespaceName) + "/tables/" + tableName);
 
         Request request = prepareDelete()
                 .setUri(uri)
@@ -648,79 +396,67 @@ public class PolarisRestClient
         });
     }
 
-    // View Operations
+    // HELPER METHODS
 
-    public List<PolarisTableIdentifier> listViews(String namespaceName)
+    /**
+     * Creates session context for Iceberg operations
+     */
+    private SessionCatalog.SessionContext createSessionContext()
     {
-        URI uri = buildUri("/v1/" + config.getPrefix() + "/namespaces/" + encodeNamespace(namespaceName) + "/views")
-                .build();
+        String sessionId = UUID.randomUUID().toString();
+        Map<String, String> credentials = getAuthHeaders();
+        Map<String, String> properties = ImmutableMap.of(
+                "catalog", config.getPrefix(),
+                "warehouse", config.getUri().toString());
 
-        Request request = prepareGet()
-                .setUri(uri)
-                .addHeaders(buildHeaders(getAuthHeaders()))
-                .build();
-
-        return execute(request, new ResponseHandler<List<PolarisTableIdentifier>, RuntimeException>()
-        {
-            @Override
-            public List<PolarisTableIdentifier> handleException(Request request, Exception exception)
-            {
-                throw new PolarisException("Failed to list views: " + exception.getMessage(), exception);
-            }
-
-            @Override
-            public List<PolarisTableIdentifier> handle(Request request, io.airlift.http.client.Response response)
-            {
-                try {
-                    if (response.getStatusCode() == 404) {
-                        throw new PolarisNotFoundException("Namespace not found: " + namespaceName);
-                    }
-
-                    // Parse views response - similar to tables
-                    JsonNode root = objectMapper.readTree(response.getInputStream());
-                    JsonNode identifiersNode = root.get("identifiers");
-
-                    ImmutableList.Builder<PolarisTableIdentifier> views = ImmutableList.builder();
-                    if (identifiersNode != null && identifiersNode.isArray()) {
-                        for (JsonNode identifierNode : identifiersNode) {
-                            JsonNode namespaceNode = identifierNode.get("namespace");
-                            JsonNode nameNode = identifierNode.get("name");
-
-                            if (namespaceNode != null && nameNode != null) {
-                                String[] namespaceArray = objectMapper.convertValue(namespaceNode, String[].class);
-                                String namespace = String.join(".", namespaceArray);
-                                String name = nameNode.asText();
-                                views.add(new PolarisTableIdentifier(namespace, name));
-                            }
-                        }
-                    }
-                    return views.build();
-                }
-                catch (Exception e) {
-                    throw new PolarisException("Failed to parse views response", e);
-                }
-            }
-        });
+        return new SessionCatalog.SessionContext(sessionId, "polaris-user", credentials, properties, null);
     }
 
-    // Helper methods
-
-    private UriBuilder buildUri(String path)
+    /**
+     * Converts Iceberg Table to PolarisTableMetadata
+     */
+    private PolarisTableMetadata convertIcebergTableToPolaris(org.apache.iceberg.Table table)
     {
-        return UriBuilder.fromUri(config.getUri()).path(path);
+        // Implementation to convert Iceberg table metadata to Polaris format
+        // This would extract schema, properties, etc. from the Iceberg table
+        throw new UnsupportedOperationException("Implementation needed");
     }
 
-    private String encodeNamespace(String namespace)
-    {
-        return namespace.replace(".", "%1F"); // Use ASCII Unit Separator for namespace encoding
-    }
+    // AUTHENTICATION & HTTP UTILITIES
 
+    /**
+     * Gets authentication headers based on configured auth type
+     */
     private Map<String, String> getAuthHeaders()
     {
-        // For now, return empty headers - basic authentication can be added later
-        return ImmutableMap.of();
+        ImmutableMap.Builder<String, String> headers = ImmutableMap.builder();
+
+        switch (config.getAuthType().toUpperCase()) {
+            case "BEARER_TOKEN":
+                config.getToken().ifPresent(token ->
+                            headers.put("Authorization", "Bearer " + token));
+                break;
+            case "OAUTH2":
+                // For OAuth2, we would typically get the token from RESTSessionCatalog
+                // and reuse it for Generic Table operations
+                config.getToken().ifPresent(token ->
+                            headers.put("Authorization", "Bearer " + token));
+                break;
+            case "NONE":
+            default:
+                // No authentication headers
+                break;
+        }
+
+        // Add any extra headers from config
+        config.getExtraHeaders().ifPresent(headers::putAll);
+
+        return headers.buildOrThrow();
     }
 
+    /**
+     * Builds headers for HTTP requests
+     */
     private Multimap<String, String> buildHeaders(Map<String, String> headers)
     {
         ImmutableMultimap.Builder<String, String> builder = ImmutableMultimap.builder();
@@ -728,6 +464,9 @@ public class PolarisRestClient
         return builder.build();
     }
 
+    /**
+     * Executes HTTP request with error handling
+     */
     private <T> T execute(Request request, ResponseHandler<T, RuntimeException> responseHandler)
     {
         try {
@@ -738,6 +477,9 @@ public class PolarisRestClient
         }
     }
 
+    /**
+     * Creates JSON body generator for HTTP requests
+     */
     private BodyGenerator createJsonBodyGenerator(Object object)
     {
         try {
@@ -749,116 +491,48 @@ public class PolarisRestClient
         }
     }
 
-    private PolarisTableMetadata parseTableMetadata(JsonNode root)
+    /**
+     * Builds URI for API requests by simply concatenating base URI with path
+     */
+    private URI buildUri(String path)
     {
-        // Parse Iceberg table metadata from JSON response
-        JsonNode metadataNode = root.get("metadata");
-        if (metadataNode == null) {
-            throw new PolarisException("Invalid table metadata response");
+        String baseUri = config.getUri().toString();
+        if (baseUri.endsWith("/") && path.startsWith("/")) {
+            return URI.create(baseUri + path.substring(1));
         }
+        if (!baseUri.endsWith("/") && !path.startsWith("/")) {
+            return URI.create(baseUri + "/" + path);
+        }
+        return URI.create(baseUri + path);
+    }
 
-        String location = metadataNode.path("location").asText();
-        Map<String, Object> schema = objectMapper.convertValue(metadataNode.get("schema"), new TypeReference<Map<String, Object>>() {});
-        Map<String, String> properties = objectMapper.convertValue(metadataNode.get("properties"), new TypeReference<Map<String, String>>() {});
+    /**
+     * Encodes namespace for URL path
+     */
+    private String encodeNamespace(String namespace)
+    {
+        return namespace.replace(".", "%1F");
+    }
 
-        return new PolarisTableMetadata(location, schema, properties);
+    // TODO: CONVERSION METHODS
+
+    private org.apache.iceberg.Schema extractSchemaFromRequest(Map<String, Object> tableRequest)
+    {
+        throw new UnsupportedOperationException("Schema extraction not implemented yet");
+    }
+
+    private org.apache.iceberg.PartitionSpec extractPartitionSpecFromRequest(Map<String, Object> tableRequest)
+    {
+        throw new UnsupportedOperationException("Partition spec extraction not implemented yet");
+    }
+
+    private Map<String, String> extractPropertiesFromRequest(Map<String, Object> tableRequest)
+    {
+        throw new UnsupportedOperationException("Properties extraction not implemented yet");
     }
 
     private PolarisGenericTable parseGenericTable(JsonNode root)
     {
-        // Parse generic table from JSON response
-        String name = root.path("name").asText();
-        String location = root.path("location").asText();
-        Map<String, Object> schemaMap = objectMapper.convertValue(root.get("schema"), new TypeReference<Map<String, Object>>() {});
-        Map<String, String> properties = objectMapper.convertValue(root.get("properties"), new TypeReference<Map<String, String>>() {});
-
-        // Convert schema map to PolarisSchema
-        PolarisSchema schema = convertSchemaMap(schemaMap);
-
-        return new PolarisGenericTable(name, location, schema, properties);
-    }
-
-    private PolarisSchema convertSchemaMap(Map<String, Object> schemaMap)
-    {
-        if (schemaMap == null) {
-            return null;
-        }
-
-        // Get schema ID, default to 1 if not present
-        Integer schemaId = (Integer) schemaMap.getOrDefault("schema-id", 1);
-        Object fieldsObj = schemaMap.get("fields");
-        List<Map<String, Object>> fieldsData = objectMapper.convertValue(fieldsObj, new TypeReference<List<Map<String, Object>>>() {});
-
-        List<PolarisSchema.PolarisField> fields = ImmutableList.of();
-        if (fieldsData != null) {
-            fields = fieldsData.stream()
-                    .map(this::convertFieldMap)
-                    .collect(toImmutableList());
-        }
-
-        return new PolarisSchema(schemaId, fields);
-    }
-
-    private PolarisSchema.PolarisField convertFieldMap(Map<String, Object> fieldMap)
-    {
-        Integer id = (Integer) fieldMap.getOrDefault("id", 0);
-        String name = (String) fieldMap.get("name");
-        String type = (String) fieldMap.get("type");
-        Boolean nullable = (Boolean) fieldMap.getOrDefault("nullable", true);
-        boolean required = !nullable;
-        Object metadataObj = fieldMap.getOrDefault("metadata", ImmutableMap.of());
-        Map<String, String> metadata = objectMapper.convertValue(metadataObj, new TypeReference<Map<String, String>>() {});
-
-        return new PolarisSchema.PolarisField(id, name, required, type, metadata);
-    }
-
-    private static class UriBuilder
-    {
-        private final URI baseUri;
-        private final StringBuilder pathBuilder;
-        private final StringBuilder queryBuilder;
-
-        private UriBuilder(URI baseUri)
-        {
-            this.baseUri = requireNonNull(baseUri, "baseUri is null");
-            this.pathBuilder = new StringBuilder(baseUri.getPath());
-            this.queryBuilder = new StringBuilder();
-        }
-
-        public static UriBuilder fromUri(URI uri)
-        {
-            return new UriBuilder(uri);
-        }
-
-        public UriBuilder path(String path)
-        {
-            if (!path.startsWith("/") && !pathBuilder.toString().endsWith("/")) {
-                pathBuilder.append("/");
-            }
-            pathBuilder.append(path);
-            return this;
-        }
-
-        public UriBuilder addParameter(String name, String value)
-        {
-            if (value != null) {
-                if (queryBuilder.length() > 0) {
-                    queryBuilder.append("&");
-                }
-                queryBuilder.append(name).append("=").append(value);
-            }
-            return this;
-        }
-
-        public URI build()
-        {
-            try {
-                String query = queryBuilder.length() > 0 ? queryBuilder.toString() : null;
-                return new URI(baseUri.getScheme(), baseUri.getAuthority(), pathBuilder.toString(), query, null);
-            }
-            catch (Exception e) {
-                throw new RuntimeException("Failed to build URI", e);
-            }
-        }
+        throw new UnsupportedOperationException("Generic table parsing not implemented yet");
     }
 }
