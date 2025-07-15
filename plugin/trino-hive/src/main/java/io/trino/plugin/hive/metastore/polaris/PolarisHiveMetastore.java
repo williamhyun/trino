@@ -42,11 +42,14 @@ import io.trino.spi.predicate.TupleDomain;
 import io.trino.spi.security.RoleGrant;
 import io.trino.spi.statistics.ColumnStatisticType;
 import io.trino.spi.type.Type;
+import org.apache.iceberg.Schema;
+import org.apache.iceberg.Transaction;
 import org.apache.iceberg.catalog.Namespace;
 import org.apache.iceberg.catalog.TableIdentifier;
 import org.apache.iceberg.exceptions.NoSuchTableException;
 import org.apache.iceberg.rest.RESTSessionCatalog;
 import org.apache.iceberg.catalog.SessionCatalog;
+import org.apache.iceberg.types.Types;
 
 import java.util.Collection;
 import java.util.List;
@@ -55,6 +58,7 @@ import java.util.Optional;
 import java.util.OptionalLong;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 
@@ -122,7 +126,7 @@ public class PolarisHiveMetastore
             TableIdentifier tableId = TableIdentifier.of(databaseName, tableName);
             SessionCatalog.SessionContext sessionContext = createSessionContext();
             org.apache.iceberg.Table icebergTable = restSessionCatalog.loadTable(sessionContext, tableId);
-            
+
             // Convert Iceberg table to Hive representation
             return Optional.of(convertIcebergToHiveTable(databaseName, tableName, icebergTable));
         }
@@ -143,7 +147,7 @@ public class PolarisHiveMetastore
         String sessionId = UUID.randomUUID().toString();
         Map<String, String> credentials = ImmutableMap.of();
         Map<String, String> properties = ImmutableMap.of();
-        
+
         return new SessionCatalog.SessionContext(sessionId, "trino-user", credentials, properties, null);
     }
 
@@ -214,7 +218,7 @@ public class PolarisHiveMetastore
 
     public List<String> getAllViews(String databaseName)
     {
-        // Views are not supported by Polaris REST API
+        // TODO: implement view support, the Polaris API supports it.
         return ImmutableList.of();
     }
 
@@ -303,8 +307,19 @@ public class PolarisHiveMetastore
 
     private void createIcebergTable(String databaseName, String tableName, Table table)
     {
-        Map<String, Object> tableRequest = convertHiveToIcebergTable(table);
-        polarisClient.createIcebergTable(databaseName, tableName, tableRequest);
+        Schema icebergSchema = convertHiveToIcebergSchema(table.getDataColumns());
+        TableIdentifier tableIdentifier = TableIdentifier.of(databaseName, tableName);
+        SessionCatalog.SessionContext sessionContext = createSessionContext();
+        Map<String, String> properties = table.getParameters();
+        String location = table.getStorage().getLocation();
+
+        // Use the RESTSessionCatalog to build and create the table
+        Transaction transaction = restSessionCatalog.buildTable(sessionContext, tableIdentifier, icebergSchema)
+                .withLocation(location)
+                .withProperties(properties)
+                .createTransaction();
+
+        transaction.commitTransaction();
     }
 
     private void createGenericTable(String databaseName, String tableName, Table table)
@@ -314,34 +329,17 @@ public class PolarisHiveMetastore
         polarisClient.createGenericTable(databaseName, genericTable);
     }
 
-    private Map<String, Object> convertHiveToIcebergTable(Table table)
-    {
-        // Convert Hive table to Iceberg table format
-        String location = table.getStorage().getLocation();
-
-        // Convert columns to Iceberg schema
-        Map<String, Object> schema = convertHiveColumnsToIcebergSchema(table.getDataColumns());
-
-        // Build Iceberg table request
-        return ImmutableMap.<String, Object>builder()
-                .put("name", table.getTableName())
-                .put("location", location)
-                .put("schema", schema)
-                .put("properties", table.getParameters())
-                .build();
-    }
-
     private PolarisGenericTable convertHiveToGenericTable(Table table)
     {
         String location = table.getStorage().getLocation();
         Map<String, String> parameters = table.getParameters();
-        
+
         // Determine format from table properties
         String format = detectTableFormat(table).toLowerCase();
-        
+
         // Extract comment/description
         String doc = table.getParameters().get("comment");
-        
+
         // Copy all table properties except internal ones
         ImmutableMap.Builder<String, String> properties = ImmutableMap.builder();
         parameters.forEach((key, value) -> {
@@ -358,44 +356,33 @@ public class PolarisHiveMetastore
                 properties.build());
     }
 
-    private Map<String, Object> convertHiveColumnsToIcebergSchema(List<Column> columns)
+    private Schema convertHiveToIcebergSchema(List<Column> columns)
     {
-        List<Map<String, Object>> fields = columns.stream()
-                .map(this::convertHiveColumnToIcebergField)
+        AtomicInteger columnId = new AtomicInteger(1);
+        List<Types.NestedField> icebergColumns = columns.stream()
+                .map(column -> Types.NestedField.optional(
+                        columnId.getAndIncrement(),
+                        column.getName(),
+                        convertHiveTypeToIcebergType(column.getType()),
+                        column.getComment().orElse(null)))
                 .collect(toImmutableList());
-
-        return ImmutableMap.of(
-                "type", "struct",
-                "schema-id", 0,
-                "fields", fields);
+        return new Schema(icebergColumns);
     }
 
-    private Map<String, Object> convertHiveColumnToIcebergField(Column column)
-    {
-        return ImmutableMap.<String, Object>builder()
-                .put("id", column.getName().hashCode()) // Simple ID generation
-                .put("name", column.getName())
-                .put("required", true) // Default to required
-                .put("type", convertHiveTypeToIcebergType(column.getType()))
-                .build();
-    }
-
-    private String convertHiveTypeToIcebergType(HiveType hiveType)
+    private org.apache.iceberg.types.Type convertHiveTypeToIcebergType(HiveType hiveType)
     {
         String typeName = hiveType.getHiveTypeName().toString().toLowerCase();
         return switch (typeName) {
-            case "boolean" -> "boolean";
-            case "tinyint" -> "int";
-            case "smallint" -> "int";
-            case "int" -> "int";
-            case "bigint" -> "long";
-            case "float" -> "float";
-            case "double" -> "double";
-            case "string" -> "string";
-            case "binary" -> "binary";
-            case "date" -> "date";
-            case "timestamp" -> "timestamp";
-            default -> "string"; // Default fallback
+            case "boolean" -> Types.BooleanType.get();
+            case "tinyint", "smallint", "int" -> Types.IntegerType.get();
+            case "bigint" -> Types.LongType.get();
+            case "float" -> Types.FloatType.get();
+            case "double" -> Types.DoubleType.get();
+            case "string" -> Types.StringType.get();
+            case "binary" -> Types.BinaryType.get();
+            case "date" -> Types.DateType.get();
+            case "timestamp" -> Types.TimestampType.withZone();
+            default -> Types.StringType.get(); // Default fallback
         };
     }
 
@@ -405,10 +392,17 @@ public class PolarisHiveMetastore
         try {
             // Try to drop as Iceberg table first
             try {
-                polarisClient.dropIcebergTable(databaseName, tableName, deleteData);
+                SessionCatalog.SessionContext sessionContext = createSessionContext();
+                TableIdentifier tableId = TableIdentifier.of(databaseName, tableName);
+                if (deleteData) {
+                    restSessionCatalog.purgeTable(sessionContext, tableId);
+                }
+                else {
+                    restSessionCatalog.dropTable(sessionContext, tableId);
+                }
                 return;
             }
-            catch (PolarisNotFoundException ignored) {
+            catch (NoSuchTableException ignored) {
                 // Fall through to try generic table
             }
 
@@ -435,10 +429,13 @@ public class PolarisHiveMetastore
         try {
             // Try to rename as Iceberg table first
             try {
-                polarisClient.renameIcebergTable(databaseName, tableName, newDatabaseName, newTableName);
+                SessionCatalog.SessionContext sessionContext = createSessionContext();
+                TableIdentifier from = TableIdentifier.of(databaseName, tableName);
+                TableIdentifier to = TableIdentifier.of(newDatabaseName, newTableName);
+                restSessionCatalog.renameTable(sessionContext, from, to);
                 return;
             }
-            catch (PolarisNotFoundException ignored) {
+            catch (NoSuchTableException ignored) {
                 // Fall through - table might be a generic table
             }
 
@@ -717,7 +714,7 @@ public class PolarisHiveMetastore
         // we'll create a table with minimal column information.
         // The actual schema will be determined by the engine (Delta Lake, CSV reader, etc.)
         List<Column> columns = ImmutableList.of();
-        
+
         // Determine storage format based on generic table format
         StorageFormat storageFormat = switch (genericTable.getFormat().toLowerCase()) {
             case "delta" -> StorageFormat.create(
@@ -736,13 +733,13 @@ public class PolarisHiveMetastore
 
         ImmutableMap.Builder<String, String> parameters = ImmutableMap.builder();
         parameters.putAll(genericTable.getProperties());
-        
+
         // Add format information
         if ("delta".equalsIgnoreCase(genericTable.getFormat())) {
             parameters.put("spark.sql.sources.provider", "DELTA");
         }
         parameters.put("format", genericTable.getFormat());
-        
+
         // Add comment if present
         genericTable.getDoc().ifPresent(doc -> parameters.put("comment", doc));
 
@@ -754,7 +751,7 @@ public class PolarisHiveMetastore
                 .setParameters(parameters.build());
 
         // Set storage information
-        genericTable.getBaseLocation().ifPresent(location -> 
+        genericTable.getBaseLocation().ifPresent(location ->
             tableBuilder.withStorage(storage -> storage
                     .setLocation(location)
                     .setStorageFormat(storageFormat)
