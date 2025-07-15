@@ -17,6 +17,7 @@ import com.google.inject.Inject;
 import io.trino.metastore.HiveMetastore;
 import io.trino.metastore.HiveMetastoreFactory;
 import io.trino.spi.security.ConnectorIdentity;
+import org.apache.iceberg.rest.RESTSessionCatalog;
 
 import java.util.Optional;
 
@@ -25,19 +26,20 @@ import static java.util.Objects.requireNonNull;
 public class PolarisHiveMetastoreFactory
         implements HiveMetastoreFactory
 {
-    private final PolarisRestClient restClient;
+    private final PolarisRestClient polarisClient;
+    private final RESTSessionCatalog restSessionCatalog;
 
     @Inject
-    public PolarisHiveMetastoreFactory(PolarisRestClient restClient)
+    public PolarisHiveMetastoreFactory(PolarisRestClient polarisClient, RESTSessionCatalog restSessionCatalog)
     {
-        this.restClient = requireNonNull(restClient, "restClient is null");
+        this.polarisClient = requireNonNull(polarisClient, "polarisClient is null");
+        this.restSessionCatalog = requireNonNull(restSessionCatalog, "restSessionCatalog is null");
     }
 
     @Override
     public HiveMetastore createMetastore(Optional<ConnectorIdentity> identity)
     {
-        // Create new instance per call
-        return new PolarisHiveMetastore(restClient);
+        return new PolarisHiveMetastore(polarisClient, restSessionCatalog);
     }
 
     @Override
