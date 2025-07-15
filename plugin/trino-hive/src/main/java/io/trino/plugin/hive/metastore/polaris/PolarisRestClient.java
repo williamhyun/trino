@@ -133,76 +133,6 @@ public class PolarisRestClient
         }
     }
 
-    /**
-     * Creates Iceberg table using the standard REST catalog
-     */
-    public PolarisTableMetadata createIcebergTable(String namespaceName, String tableName, Map<String, Object> tableRequest)
-    {
-        try {
-            SessionCatalog.SessionContext sessionContext = createSessionContext();
-            TableIdentifier tableId = TableIdentifier.of(namespaceName, tableName);
-
-            // Extract schema and other properties from tableRequest
-            org.apache.iceberg.Schema schema = extractSchemaFromRequest(tableRequest);
-            org.apache.iceberg.PartitionSpec partitionSpec = extractPartitionSpecFromRequest(tableRequest);
-            Map<String, String> properties = extractPropertiesFromRequest(tableRequest);
-
-            org.apache.iceberg.Table table = restSessionCatalog.buildTable(sessionContext, tableId, schema)
-                    .withPartitionSpec(partitionSpec)
-                    .withProperties(properties)
-                    .create();
-
-            return convertIcebergTableToPolaris(table);
-        }
-        catch (RESTException e) {
-            throw new PolarisException("Failed to create Iceberg table: " + e.getMessage(), e);
-        }
-    }
-
-    /**
-     * Renames Iceberg table using the standard REST catalog
-     */
-    public void renameIcebergTable(String sourceNamespace, String sourceTable, String destNamespace, String destTable)
-    {
-        try {
-            SessionCatalog.SessionContext sessionContext = createSessionContext();
-            TableIdentifier sourceId = TableIdentifier.of(sourceNamespace, sourceTable);
-            TableIdentifier destId = TableIdentifier.of(destNamespace, destTable);
-
-            restSessionCatalog.renameTable(sessionContext, sourceId, destId);
-        }
-        catch (NoSuchTableException e) {
-            throw new PolarisNotFoundException("Iceberg table not found: " + sourceNamespace + "." + sourceTable);
-        }
-        catch (RESTException e) {
-            throw new PolarisException("Failed to rename Iceberg table: " + e.getMessage(), e);
-        }
-    }
-
-    /**
-     * Drops Iceberg table using the standard REST catalog
-     */
-    public void dropIcebergTable(String namespaceName, String tableName, boolean purgeRequested)
-    {
-        try {
-            SessionCatalog.SessionContext sessionContext = createSessionContext();
-            TableIdentifier tableId = TableIdentifier.of(namespaceName, tableName);
-
-            if (purgeRequested) {
-                restSessionCatalog.purgeTable(sessionContext, tableId);
-            }
-            else {
-                restSessionCatalog.dropTable(sessionContext, tableId);
-            }
-        }
-        catch (NoSuchTableException e) {
-            throw new PolarisNotFoundException("Iceberg table not found: " + namespaceName + "." + tableName);
-        }
-        catch (RESTException e) {
-            throw new PolarisException("Failed to drop Iceberg table: " + e.getMessage(), e);
-        }
-    }
-
     // NAMESPACE OPERATIONS (via RESTSessionCatalog)
 
     /**
@@ -228,15 +158,7 @@ public class PolarisRestClient
      */
     public void createNamespace(PolarisNamespace namespace)
     {
-        try {
-            SessionCatalog.SessionContext sessionContext = createSessionContext();
-            Namespace ns = Namespace.of(namespace.getName().split("\\."));
-
-            restSessionCatalog.createNamespace(sessionContext, ns, namespace.getProperties());
-        }
-        catch (RESTException e) {
-            throw new PolarisException("Failed to create namespace: " + e.getMessage(), e);
-        }
+        // TODO: Implement REST API call
     }
 
     // GENERIC TABLE OPERATIONS (via HttpClient)
@@ -349,84 +271,17 @@ public class PolarisRestClient
     /**
      * Creates a Generic table using Polaris-specific API
      */
-    public void createGenericTable(String namespaceName, PolarisGenericTable table)
+    public void createGenericTable(String databaseName, PolarisGenericTable genericTable)
     {
-        URI uri = buildUri("/polaris/v1/" + config.getPrefix() + "/namespaces/" + encodeNamespace(namespaceName) + "/generic-tables");
-
-        Map<String, Object> requestBody = new HashMap<>();
-        requestBody.put("name", table.getName());
-        requestBody.put("format", table.getFormat());
-        
-        if (table.getBaseLocation() != null) {
-            requestBody.put("base-location", table.getBaseLocation());
-        }
-        if (table.getDoc() != null) {
-            requestBody.put("doc", table.getDoc());
-        }
-        if (table.getProperties() != null && !table.getProperties().isEmpty()) {
-            requestBody.put("properties", table.getProperties());
-        }
-
-        Request request = preparePost()
-                .setUri(uri)
-                .addHeaders(buildHeaders(getAuthHeaders()))
-                .setBodyGenerator(createJsonBodyGenerator(requestBody))
-                .build();
-
-        execute(request, new ResponseHandler<Void, RuntimeException>()
-        {
-            @Override
-            public Void handleException(Request request, Exception exception)
-            {
-                throw new PolarisException("Failed to create generic table: " + table.getName(), exception);
-            }
-
-            @Override
-            public Void handle(Request request, Response response)
-            {
-                if (response.getStatusCode() == 409) {
-                    throw new TableAlreadyExistsException(new SchemaTableName(namespaceName, table.getName()));
-                }
-                if (response.getStatusCode() != 200) {
-                    throw new PolarisException("Failed to create generic table: " + response.getStatusCode());
-                }
-                return null;
-            }
-        });
+        // TODO: Implement REST API call
     }
 
     /**
      * Drops a Generic table using Polaris-specific API
      */
-    public void dropGenericTable(String namespaceName, String tableName)
+    public void dropGenericTable(String databaseName, String tableName)
     {
-        URI uri = buildUri("/polaris/v1/" + config.getPrefix() + "/namespaces/" + encodeNamespace(namespaceName) + "/generic-tables/" + tableName);
-
-        Request request = prepareDelete()
-                .setUri(uri)
-                .addHeaders(buildHeaders(getAuthHeaders()))
-                .build();
-
-        execute(request, new ResponseHandler<Void, RuntimeException>()
-        {
-            @Override
-            public Void handleException(Request request, Exception exception)
-            {
-                throw new PolarisException("Failed to drop generic table: " + tableName, exception);
-            }
-
-            @Override
-            public Void handle(Request request, Response response)
-            {
-                if (response.getStatusCode() == 404) {
-                    throw new TableNotFoundException(new SchemaTableName(namespaceName, tableName));
-                }
-                if (response.getStatusCode() != 204) {
-                    throw new PolarisException("Failed to drop generic table: " + response.getStatusCode());
-                }
-                return null;
-            }
-        });
+        // TODO: Implement REST API call
     }
 
     /**
