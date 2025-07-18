@@ -52,6 +52,7 @@ import org.apache.iceberg.types.Types;
 
 import java.util.Collection;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 import java.util.OptionalLong;
@@ -261,7 +262,7 @@ public class PolarisHiveMetastore
 
             switch (tableFormat) {
                 case "ICEBERG" -> createIcebergTable(databaseName, tableName, table);
-                case "DELTA" -> createGenericTable(databaseName, tableName, table);
+                case "DELTA" -> createGenericTable(databaseName, table);
                 default -> throw new TrinoException(NOT_SUPPORTED, "Unsupported table format: " + tableFormat);
             }
         }
@@ -319,7 +320,7 @@ public class PolarisHiveMetastore
         transaction.commitTransaction();
     }
 
-    private void createGenericTable(String databaseName, String tableName, Table table)
+    private void createGenericTable(String databaseName, Table table)
     {
         // For Delta Lake and other generic tables, use the generic table API
         PolarisGenericTable genericTable = convertHiveToGenericTable(table);
@@ -332,7 +333,7 @@ public class PolarisHiveMetastore
         Map<String, String> parameters = table.getParameters();
 
         // Determine format from table properties
-        String format = detectTableFormat(table).toLowerCase();
+        String format = detectTableFormat(table).toLowerCase(Locale.ROOT);
 
         // Extract comment/description
         String doc = table.getParameters().get("comment");
@@ -368,7 +369,7 @@ public class PolarisHiveMetastore
 
     private org.apache.iceberg.types.Type convertHiveTypeToIcebergType(HiveType hiveType)
     {
-        String typeName = hiveType.getHiveTypeName().toString().toLowerCase();
+        String typeName = hiveType.getHiveTypeName().toString().toLowerCase(Locale.ROOT);
         return switch (typeName) {
             case "boolean" -> Types.BooleanType.get();
             case "tinyint", "smallint", "int" -> Types.IntegerType.get();
@@ -713,7 +714,7 @@ public class PolarisHiveMetastore
         List<Column> columns = ImmutableList.of();
 
         // Determine storage format based on generic table format
-        StorageFormat storageFormat = switch (genericTable.getFormat().toLowerCase()) {
+        StorageFormat storageFormat = switch (genericTable.getFormat().toLowerCase(Locale.ROOT)) {
             case "delta" -> StorageFormat.create(
                     "org.apache.hadoop.mapred.FileInputFormat",
                     "org.apache.hadoop.mapred.FileOutputFormat",
