@@ -47,6 +47,8 @@ import java.util.UUID;
 
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static io.airlift.http.client.Request.Builder.prepareGet;
+import static io.airlift.http.client.Request.Builder.preparePost;
+import static io.airlift.http.client.Request.Builder.prepareDelete;
 import static java.nio.charset.StandardCharsets.UTF_8;
 import static java.util.Objects.requireNonNull;
 
@@ -145,7 +147,15 @@ public class PolarisRestClient
      */
     public void createNamespace(PolarisNamespace namespace)
     {
-        // TODO: Implement REST API call
+        try {
+            SessionCatalog.SessionContext sessionContext = createSessionContext();
+            org.apache.iceberg.catalog.Namespace icebergNamespace = org.apache.iceberg.catalog.Namespace.of(namespace.getName());
+
+            restSessionCatalog.createNamespace(sessionContext, icebergNamespace, namespace.getProperties());
+        }
+        catch (RESTException e) {
+            throw new PolarisException("Failed to create namespace: " + namespace.getName(), e);
+        }
     }
 
     // GENERIC TABLE OPERATIONS (via HttpClient)
@@ -232,7 +242,42 @@ public class PolarisRestClient
      */
     public void createGenericTable(String databaseName, PolarisGenericTable genericTable)
     {
-        // TODO: Implement REST API call
+        URI uri = buildUri("/polaris/v1/" + config.getPrefix() + "/namespaces/" + encodeNamespace(databaseName) + "/generic-tables");
+
+        CreateGenericTableRequest request = new CreateGenericTableRequest(
+                genericTable.getName(),
+                genericTable.getFormat(),
+                genericTable.getBaseLocation().orElse(null),
+                genericTable.getDoc().orElse(null),
+                genericTable.getProperties());
+
+        Request httpRequest = preparePost()
+                .setUri(uri)
+                .addHeaders(buildHeaders(getAuthHeaders()))
+                .addHeader("Content-Type", "application/json")
+                .setBodyGenerator(createJsonBodyGenerator(request))
+                .build();
+
+        execute(httpRequest, new ResponseHandler<Void, RuntimeException>()
+        {
+            @Override
+            public Void handleException(Request request, Exception exception)
+            {
+                throw new PolarisException("Failed to create generic table: " + genericTable.getName(), exception);
+            }
+
+            @Override
+            public Void handle(Request request, Response response)
+            {
+                if (response.getStatusCode() == 409) {
+                    throw new PolarisAlreadyExistsException("Generic table already exists: " + genericTable.getName());
+                }
+                if (response.getStatusCode() != 200 && response.getStatusCode() != 201) {
+                    throw new PolarisException("Failed to create generic table: " + response.getStatusCode());
+                }
+                return null;
+            }
+        });
     }
 
     /**
@@ -240,7 +285,33 @@ public class PolarisRestClient
      */
     public void dropGenericTable(String databaseName, String tableName)
     {
-        // TODO: Implement REST API call
+        URI uri = buildUri("/polaris/v1/" + config.getPrefix() + "/namespaces/" + encodeNamespace(databaseName) + "/generic-tables/" + tableName);
+
+        Request request = prepareDelete()
+                .setUri(uri)
+                .addHeaders(buildHeaders(getAuthHeaders()))
+                .build();
+
+        execute(request, new ResponseHandler<Void, RuntimeException>()
+        {
+            @Override
+            public Void handleException(Request request, Exception exception)
+            {
+                throw new PolarisException("Failed to drop generic table: " + tableName, exception);
+            }
+
+            @Override
+            public Void handle(Request request, Response response)
+            {
+                if (response.getStatusCode() == 404) {
+                    throw new PolarisNotFoundException("Generic table not found: " + tableName);
+                }
+                if (response.getStatusCode() != 204) {
+                    throw new PolarisException("Failed to drop generic table: " + response.getStatusCode());
+                }
+                return null;
+            }
+        });
     }
 
     // HELPER METHODS
@@ -362,8 +433,13 @@ public class PolarisRestClient
      */
     private String encodeNamespace(String namespace)
     {
-        // TODO: Add proper URL encoding
-        return namespace;
+        try {
+            return java.net.URLEncoder.encode(namespace, UTF_8);
+        }
+        catch (Exception e) {
+            // Fallback to simple replacement for common cases
+            return namespace.replace(".", "%2E");
+        }
     }
 
     private static class ListGenericTablesResponse
@@ -417,6 +493,54 @@ public class PolarisRestClient
         public PolarisGenericTable getTable()
         {
             return table;
+        }
+    }
+
+    private static class CreateGenericTableRequest
+    {
+        private final String name;
+        private final String format;
+        private final String baseLocation;
+        private final String doc;
+        private final Map<String, String> properties;
+
+        public CreateGenericTableRequest(String name, String format, String baseLocation, String doc, Map<String, String> properties)
+        {
+            this.name = requireNonNull(name, "name is null");
+            this.format = requireNonNull(format, "format is null");
+            this.baseLocation = baseLocation; // Optional
+            this.doc = doc; // Optional
+            this.properties = properties != null ? ImmutableMap.copyOf(properties) : ImmutableMap.of();
+        }
+
+        @JsonProperty("name")
+        public String getName()
+        {
+            return name;
+        }
+
+        @JsonProperty("format")
+        public String getFormat()
+        {
+            return format;
+        }
+
+        @JsonProperty("base-location")
+        public String getBaseLocation()
+        {
+            return baseLocation;
+        }
+
+        @JsonProperty("doc")
+        public String getDoc()
+        {
+            return doc;
+        }
+
+        @JsonProperty("properties")
+        public Map<String, String> getProperties()
+        {
+            return properties;
         }
     }
 }
