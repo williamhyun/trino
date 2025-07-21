@@ -16,10 +16,6 @@ package io.trino.plugin.hive.metastore.polaris;
 import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.google.common.collect.ImmutableList;
-import com.google.common.collect.ImmutableMap;
-import com.google.common.collect.ImmutableMultimap;
-import com.google.common.collect.Multimap;
 import com.google.inject.Inject;
 import io.airlift.http.client.BodyGenerator;
 import io.airlift.http.client.HttpClient;
@@ -37,6 +33,8 @@ import org.apache.iceberg.catalog.SessionCatalog;
 import org.apache.iceberg.catalog.TableIdentifier;
 import org.apache.iceberg.exceptions.NoSuchTableException;
 import org.apache.iceberg.exceptions.RESTException;
+import org.apache.iceberg.relocated.com.google.common.collect.ImmutableList;
+import org.apache.iceberg.relocated.com.google.common.collect.ImmutableMap;
 import org.apache.iceberg.rest.RESTSessionCatalog;
 import org.apache.iceberg.rest.auth.OAuth2Properties;
 
@@ -47,18 +45,17 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 
-import static com.google.common.collect.ImmutableList.toImmutableList;
 import static io.airlift.http.client.Request.Builder.prepareGet;
 import static java.nio.charset.StandardCharsets.UTF_8;
 import static java.util.Objects.requireNonNull;
+import static org.apache.iceberg.relocated.com.google.common.collect.ImmutableList.toImmutableList;
 
 /**
  * REST client for Apache Polaris catalog API.
  *
- * This client follows the TrinoRestCatalog pattern:
+ * This client:
  * - Delegates standard Iceberg operations to RESTSessionCatalog
  * - Uses direct HttpClient for Polaris-specific Generic Table operations
- * - Provides unified interface for both Iceberg and Delta Lake table operations
  */
 public class PolarisRestClient
 {
@@ -318,9 +315,9 @@ public class PolarisRestClient
     /**
      * Builds headers for HTTP requests
      */
-    private Multimap<String, String> buildHeaders(Map<String, String> headers)
+    private com.google.common.collect.Multimap<String, String> buildHeaders(Map<String, String> headers)
     {
-        ImmutableMultimap.Builder<String, String> builder = ImmutableMultimap.builder();
+        com.google.common.collect.ImmutableMultimap.Builder<String, String> builder = com.google.common.collect.ImmutableMultimap.builder();
         headers.forEach(builder::put);
         return builder.build();
     }

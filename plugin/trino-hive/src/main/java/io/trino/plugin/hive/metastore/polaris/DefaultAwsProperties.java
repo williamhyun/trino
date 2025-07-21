@@ -13,7 +13,7 @@
  */
 package io.trino.plugin.hive.metastore.polaris;
 
-import com.google.common.collect.ImmutableMap;
+import org.apache.iceberg.relocated.com.google.common.collect.ImmutableMap;
 
 import java.util.Map;
 

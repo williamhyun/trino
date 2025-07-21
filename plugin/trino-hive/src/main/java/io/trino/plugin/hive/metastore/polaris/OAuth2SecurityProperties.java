@@ -13,8 +13,8 @@
  */
 package io.trino.plugin.hive.metastore.polaris;
 
-import com.google.common.collect.ImmutableMap;
 import com.google.inject.Inject;
+import org.apache.iceberg.relocated.com.google.common.collect.ImmutableMap;
 import org.apache.iceberg.rest.auth.AuthProperties;
 import org.apache.iceberg.rest.auth.OAuth2Properties;
 
