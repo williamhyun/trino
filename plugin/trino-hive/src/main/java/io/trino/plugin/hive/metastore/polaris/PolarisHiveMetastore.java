@@ -13,6 +13,9 @@
  */
 package io.trino.plugin.hive.metastore.polaris;
 
+import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableMap;
+import com.google.common.collect.ImmutableSet;
 import com.google.inject.Inject;
 import io.trino.metastore.AcidTransactionOwner;
 import io.trino.metastore.Column;
@@ -44,9 +47,6 @@ import org.apache.iceberg.Transaction;
 import org.apache.iceberg.catalog.SessionCatalog;
 import org.apache.iceberg.catalog.TableIdentifier;
 import org.apache.iceberg.exceptions.NoSuchTableException;
-import org.apache.iceberg.relocated.com.google.common.collect.ImmutableList;
-import org.apache.iceberg.relocated.com.google.common.collect.ImmutableMap;
-import org.apache.iceberg.relocated.com.google.common.collect.ImmutableSet;
 import org.apache.iceberg.rest.RESTSessionCatalog;
 import org.apache.iceberg.types.Types;
 
@@ -60,11 +60,11 @@ import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicInteger;
 
+import static com.google.common.collect.ImmutableList.toImmutableList;
 import static io.trino.plugin.hive.HiveErrorCode.HIVE_METASTORE_ERROR;
 import static io.trino.spi.StandardErrorCode.ALREADY_EXISTS;
 import static io.trino.spi.StandardErrorCode.NOT_SUPPORTED;
 import static java.util.Objects.requireNonNull;
-import static org.apache.iceberg.relocated.com.google.common.collect.ImmutableList.toImmutableList;
 
 public class PolarisHiveMetastore
         implements HiveMetastore
@@ -351,7 +351,7 @@ public class PolarisHiveMetastore
                 format,
                 location,
                 doc,
-                properties.build());
+                properties.buildOrThrow());
     }
 
     private Schema convertHiveToIcebergSchema(List<Column> columns)
@@ -695,7 +695,7 @@ public class PolarisHiveMetastore
                         .putAll(icebergTable.properties())
                         .put("table_type", "ICEBERG")
                         .put("metadata_location", icebergTable.location())
-                        .build())
+                        .buildOrThrow())
                 .withStorage(storage -> storage
                         .setLocation(icebergTable.location())
                         .setStorageFormat(StorageFormat.create(
@@ -746,7 +746,7 @@ public class PolarisHiveMetastore
                 .setTableName(genericTable.getName())
                 .setTableType("EXTERNAL_TABLE")
                 .setDataColumns(columns)
-                .setParameters(parameters.build());
+                .setParameters(parameters.buildOrThrow());
 
         // Set storage information
         genericTable.getBaseLocation().ifPresent(location ->

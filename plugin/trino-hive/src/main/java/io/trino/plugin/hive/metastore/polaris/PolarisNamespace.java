@@ -15,7 +15,7 @@ package io.trino.plugin.hive.metastore.polaris;
 
 import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonProperty;
-import org.apache.iceberg.relocated.com.google.common.collect.ImmutableMap;
+import com.google.common.collect.ImmutableMap;
 
 import java.util.Map;
 import java.util.Objects;
