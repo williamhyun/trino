@@ -13,7 +13,6 @@
  */
 package io.trino.plugin.hive.metastore.polaris;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.common.collect.ImmutableMap;
 import com.google.inject.Binder;
 import com.google.inject.Key;
@@ -95,12 +94,5 @@ public class PolarisMetastoreModule
 
         catalog.initialize("polaris", properties.buildOrThrow());
         return catalog;
-    }
-
-    @Provides
-    @Singleton
-    public ObjectMapper createObjectMapper()
-    {
-        return new ObjectMapper();
     }
 }
