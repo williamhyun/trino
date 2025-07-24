@@ -317,8 +317,9 @@ public class PolarisHiveMetastore
             return "CSV";
         }
 
-        // Default to Delta Lake for generic tables
-        return "DELTA";
+        // For Polaris catalog, default to Iceberg tables (since Polaris is Iceberg-native)
+        // Generic tables (Delta, CSV) should be explicitly specified
+        return "ICEBERG";
     }
 
     private void createIcebergTable(String databaseName, String tableName, Table table)
@@ -704,24 +705,79 @@ public class PolarisHiveMetastore
     // Helper methods for converting Polaris tables to Hive tables
     private Table convertIcebergToHiveTable(String databaseName, String tableName, org.apache.iceberg.Table icebergTable)
     {
+        // Convert Iceberg schema to Hive columns
+        List<Column> hiveColumns = convertIcebergSchemaToHiveColumns(icebergTable.schema());
+
+        // Filter out Iceberg-specific properties to make it look like a regular Hive table
+        ImmutableMap.Builder<String, String> cleanParametersBuilder = ImmutableMap.builder();
+        icebergTable.properties().entrySet().stream()
+                .filter(entry -> !isIcebergSpecificProperty(entry.getKey()))
+                .forEach(entry -> cleanParametersBuilder.put(entry.getKey(), entry.getValue()));
+        Map<String, String> cleanParameters = cleanParametersBuilder.buildOrThrow();
+
+        // Create a standard Parquet external table
         return Table.builder()
                 .setDatabaseName(databaseName)
                 .setTableName(tableName)
+                .setOwner(Optional.of("trino-user"))
                 .setTableType("EXTERNAL_TABLE")
-                .setDataColumns(ImmutableList.of()) // Schema will be handled by Iceberg connector
-                .setParameters(ImmutableMap.<String, String>builder()
-                        .putAll(icebergTable.properties())
-                        .put("table_type", "ICEBERG")
-                        .put("metadata_location", icebergTable.location())
-                        .buildOrThrow())
+                .setDataColumns(hiveColumns) // Real columns from Iceberg schema
+                .setParameters(cleanParameters) // Clean parameters without Iceberg markers
                 .withStorage(storage -> storage
                         .setLocation(icebergTable.location())
                         .setStorageFormat(StorageFormat.create(
-                                "org.apache.hadoop.mapred.FileInputFormat",
-                                "org.apache.hadoop.mapred.FileOutputFormat",
-                                "org.apache.hadoop.hive.serde2.lazy.LazySimpleSerDe"))
-                        .setSerdeParameters(ImmutableMap.of("path", icebergTable.location())))
+                                "org.apache.hadoop.hive.ql.io.parquet.serde.ParquetHiveSerDe",
+                                "org.apache.hadoop.hive.ql.io.parquet.MapredParquetInputFormat",
+                                "org.apache.hadoop.hive.ql.io.parquet.MapredParquetOutputFormat"))
+                        .setSerdeParameters(ImmutableMap.of()))
                 .build();
+    }
+
+    /**
+     * Convert Iceberg schema to Hive columns
+     */
+    private List<Column> convertIcebergSchemaToHiveColumns(Schema icebergSchema)
+    {
+        return icebergSchema.columns().stream()
+                .map(field -> new Column(
+                        field.name(),
+                        convertIcebergFieldTypeToHiveType(field.type()),
+                        Optional.ofNullable(field.doc()),
+                        ImmutableMap.of()))
+                .collect(toImmutableList());
+    }
+
+    /**
+     * Convert Iceberg field type to Hive type (reverse of existing convertHiveTypeToIcebergType)
+     */
+    private HiveType convertIcebergFieldTypeToHiveType(org.apache.iceberg.types.Type icebergType)
+    {
+        return switch (icebergType.typeId()) {
+            case BOOLEAN -> HiveType.HIVE_BOOLEAN;
+            case INTEGER -> HiveType.HIVE_INT;
+            case LONG -> HiveType.HIVE_LONG;
+            case FLOAT -> HiveType.HIVE_FLOAT;
+            case DOUBLE -> HiveType.HIVE_DOUBLE;
+            case STRING -> HiveType.HIVE_STRING;
+            case BINARY -> HiveType.HIVE_BINARY;
+            case DATE -> HiveType.HIVE_DATE;
+            case TIMESTAMP -> HiveType.HIVE_TIMESTAMP;
+            default -> HiveType.HIVE_STRING; // Fallback for complex types
+        };
+    }
+
+    /**
+     * Check if a property is Iceberg-specific and should be filtered out
+     */
+    private boolean isIcebergSpecificProperty(String key)
+    {
+        return key.equals("table_type") ||
+               key.equals("metadata_location") ||
+               key.startsWith("write.") ||
+               key.startsWith("commit.") ||
+               key.startsWith("snapshot.") ||
+               key.startsWith("current-snapshot-id") ||
+               key.startsWith("format-version");
     }
 
     private Table convertGenericToHiveTable(String databaseName, PolarisGenericTable genericTable)
@@ -762,6 +818,7 @@ public class PolarisHiveMetastore
         Table.Builder tableBuilder = Table.builder()
                 .setDatabaseName(databaseName)
                 .setTableName(genericTable.getName())
+                .setOwner(Optional.of("trino-user")) // Set owner to prevent NullPointerException
                 .setTableType("EXTERNAL_TABLE")
                 .setDataColumns(columns)
                 .setParameters(parameters.buildOrThrow());
