@@ -20,10 +20,15 @@ import com.google.inject.Provides;
 import com.google.inject.Scopes;
 import com.google.inject.Singleton;
 import io.airlift.configuration.AbstractConfigurationAwareModule;
+import io.trino.filesystem.TrinoFileSystemFactory;
 import io.trino.metastore.HiveMetastoreFactory;
 import io.trino.metastore.RawHiveMetastoreFactory;
 import io.trino.plugin.hive.AllowHiveTableRename;
+import io.trino.spi.security.ConnectorIdentity;
+import org.apache.iceberg.CatalogProperties;
+import org.apache.iceberg.rest.HTTPClient;
 import org.apache.iceberg.rest.RESTSessionCatalog;
+import org.apache.iceberg.rest.RESTUtil;
 
 import static io.airlift.configuration.ConfigBinder.configBinder;
 import static io.airlift.http.client.HttpClientBinder.httpClientBinder;
@@ -74,23 +79,35 @@ public class PolarisMetastoreModule
     public RESTSessionCatalog createRESTSessionCatalog(
             PolarisMetastoreConfig config,
             SecurityProperties securityProperties,
-            AwsProperties awsProperties)
+            AwsProperties awsProperties,
+            TrinoFileSystemFactory fileSystemFactory)
     {
-        RESTSessionCatalog catalog = new RESTSessionCatalog();
-
         // Build properties map following Iceberg REST catalog pattern
         ImmutableMap.Builder<String, String> properties = ImmutableMap.<String, String>builder();
-        properties.put("uri", config.getUri().toString());
+        properties.put(CatalogProperties.URI, config.getUri().toString());
         properties.put("prefix", config.getPrefix());
 
         // Add warehouse if specified
-        config.getWarehouse().ifPresent(warehouse -> properties.put("warehouse", warehouse));
+        config.getWarehouse().ifPresent(warehouse -> properties.put(CatalogProperties.WAREHOUSE_LOCATION, warehouse));
 
         // Add security properties from the injected SecurityProperties
         properties.putAll(securityProperties.get());
 
         // Add AWS properties (empty for now, but ready for future SigV4 support)
         properties.putAll(awsProperties.get());
+
+        // Create RESTSessionCatalog with HTTP client and FileIO factories to avoid Hadoop dependencies
+        RESTSessionCatalog catalog = new RESTSessionCatalog(
+                httpConfig -> HTTPClient.builder(httpConfig)
+                        .uri(httpConfig.get(CatalogProperties.URI))
+                        .withHeaders(RESTUtil.configHeaders(httpConfig))
+                        .build(),
+                (context, ioConfig) -> {
+                    ConnectorIdentity currentIdentity = (context.wrappedIdentity() != null)
+                            ? ((ConnectorIdentity) context.wrappedIdentity())
+                            : ConnectorIdentity.ofUser("fake");
+                    return new ForwardingFileIo(fileSystemFactory.create(currentIdentity), ioConfig);
+                });
 
         catalog.initialize("polaris", properties.buildOrThrow());
         return catalog;
