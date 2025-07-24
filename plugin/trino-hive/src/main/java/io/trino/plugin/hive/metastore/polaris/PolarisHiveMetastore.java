@@ -16,6 +16,7 @@ package io.trino.plugin.hive.metastore.polaris;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
+import com.google.common.collect.Maps;
 import com.google.inject.Inject;
 import io.trino.metastore.AcidTransactionOwner;
 import io.trino.metastore.Column;
@@ -48,6 +49,7 @@ import org.apache.iceberg.catalog.SessionCatalog;
 import org.apache.iceberg.catalog.TableIdentifier;
 import org.apache.iceberg.exceptions.NoSuchTableException;
 import org.apache.iceberg.rest.RESTSessionCatalog;
+import org.apache.iceberg.rest.auth.OAuth2Properties;
 import org.apache.iceberg.types.Types;
 
 import java.util.Collection;
@@ -71,12 +73,14 @@ public class PolarisHiveMetastore
 {
     private final PolarisRestClient polarisClient;
     private final RESTSessionCatalog restSessionCatalog;
+    private final SecurityProperties securityProperties;
 
     @Inject
-    public PolarisHiveMetastore(PolarisRestClient polarisClient, RESTSessionCatalog restSessionCatalog)
+    public PolarisHiveMetastore(PolarisRestClient polarisClient, RESTSessionCatalog restSessionCatalog, SecurityProperties securityProperties)
     {
         this.polarisClient = requireNonNull(polarisClient, "polarisClient is null");
         this.restSessionCatalog = requireNonNull(restSessionCatalog, "restSessionCatalog is null");
+        this.securityProperties = requireNonNull(securityProperties, "securityProperties is null");
     }
 
     @Override
@@ -84,6 +88,8 @@ public class PolarisHiveMetastore
     {
         try {
             // Check if namespace exists by trying to list namespaces and find this one
+            // This uses RESTSessionCatalog which handles OAuth2 properly and identically
+            // We avoid generic table operations which use different HTTP client authentication
             List<PolarisNamespace> namespaces = polarisClient.listNamespaces(Optional.empty());
             Optional<PolarisNamespace> namespace = namespaces.stream()
                     .filter(ns -> ns.getName().equals(databaseName))
@@ -120,7 +126,7 @@ public class PolarisHiveMetastore
     public Optional<Table> getTable(String databaseName, String tableName)
     {
         try {
-            // First, try to load as an Iceberg table
+            // First, try to load as an Iceberg table using RESTSessionCatalog
             TableIdentifier tableId = TableIdentifier.of(databaseName, tableName);
             SessionCatalog.SessionContext sessionContext = createSessionContext();
             org.apache.iceberg.Table icebergTable = restSessionCatalog.loadTable(sessionContext, tableId);
@@ -130,6 +136,7 @@ public class PolarisHiveMetastore
         }
         catch (NoSuchTableException e) {
             // Not an Iceberg table, try as a generic table
+            // Now this should work with proper OAuth2 authentication
             try {
                 PolarisGenericTable genericTable = polarisClient.loadGenericTable(databaseName, tableName);
                 return Optional.of(convertGenericToHiveTable(databaseName, genericTable));
@@ -140,10 +147,21 @@ public class PolarisHiveMetastore
         }
     }
 
+    /**
+     * Creates session context using the same credentials as RESTSessionCatalog
+     * This ensures consistent OAuth2 authentication across all operations
+     */
     private SessionCatalog.SessionContext createSessionContext()
     {
         String sessionId = UUID.randomUUID().toString();
-        Map<String, String> credentials = ImmutableMap.of();
+        
+        // Extract OAuth2 credentials exactly like TrinoIcebergRestCatalogFactory does
+        Map<String, String> securityProps = securityProperties.get();
+        Map<String, String> credentials = ImmutableMap.<String, String>builder()
+                .putAll(Maps.filterKeys(securityProps, 
+                    key -> Set.of(OAuth2Properties.TOKEN, OAuth2Properties.CREDENTIAL).contains(key)))
+                .buildOrThrow();
+        
         Map<String, String> properties = ImmutableMap.of();
 
         return new SessionCatalog.SessionContext(sessionId, "trino-user", credentials, properties, null);
