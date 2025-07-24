@@ -154,14 +154,14 @@ public class PolarisHiveMetastore
     private SessionCatalog.SessionContext createSessionContext()
     {
         String sessionId = UUID.randomUUID().toString();
-        
+
         // Extract OAuth2 credentials exactly like TrinoIcebergRestCatalogFactory does
         Map<String, String> securityProps = securityProperties.get();
         Map<String, String> credentials = ImmutableMap.<String, String>builder()
-                .putAll(Maps.filterKeys(securityProps, 
+                .putAll(Maps.filterKeys(securityProps,
                     key -> Set.of(OAuth2Properties.TOKEN, OAuth2Properties.CREDENTIAL).contains(key)))
                 .buildOrThrow();
-        
+
         Map<String, String> properties = ImmutableMap.of();
 
         return new SessionCatalog.SessionContext(sessionId, "trino-user", credentials, properties, null);

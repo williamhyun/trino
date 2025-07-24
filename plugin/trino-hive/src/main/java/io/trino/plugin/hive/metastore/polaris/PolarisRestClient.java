@@ -1,4 +1,4 @@
-/*
+gi/*
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
@@ -171,28 +171,28 @@ public class PolarisRestClient
         try {
             // Extract OAuth2 credentials exactly like TrinoIcebergRestCatalogFactory does
             Map<String, String> securityProps = securityProperties.get();
-            Map<String, String> credentials = Maps.filterKeys(securityProps, 
-                key -> Set.of(OAuth2Properties.TOKEN, OAuth2Properties.CREDENTIAL).contains(key));
-            
+            Map<String, String> credentials = Maps.filterKeys(securityProps,
+                    key -> Set.of(OAuth2Properties.TOKEN, OAuth2Properties.CREDENTIAL).contains(key));
+
             // If we have a direct token, use it
             if (credentials.containsKey(OAuth2Properties.TOKEN)) {
                 return ImmutableMap.of("Authorization", "Bearer " + credentials.get(OAuth2Properties.TOKEN));
             }
-            
+
             // If we have credentials, we need to use the same OAuth2 flow as RESTSessionCatalog
             // For now, create session context with credentials and let Iceberg handle token exchange
             if (credentials.containsKey(OAuth2Properties.CREDENTIAL)) {
                 // Create session context with the same credentials as RESTSessionCatalog
                 String sessionId = UUID.randomUUID().toString();
                 SessionCatalog.SessionContext sessionContext = new SessionCatalog.SessionContext(
-                    sessionId, "trino-user", credentials, ImmutableMap.of(), null);
-                
+                        sessionId, "trino-user", credentials, ImmutableMap.of(), null);
+
                 // Note: This still requires that the underlying HTTP client handles OAuth2 token exchange
                 // For true compatibility, we'd need to use Iceberg's HTTPClient instead of Trino's HttpClient
                 throw new PolarisException("Credential-based OAuth2 requires using Iceberg's HTTPClient. " +
                         "Generic table operations are temporarily disabled. Use direct token authentication instead.");
             }
-            
+
             // No authentication credentials found
             return ImmutableMap.of();
         }
@@ -208,14 +208,14 @@ public class PolarisRestClient
     private SessionCatalog.SessionContext createSessionContext()
     {
         String sessionId = UUID.randomUUID().toString();
-        
+
         // Extract OAuth2 credentials exactly like TrinoIcebergRestCatalogFactory does
         Map<String, String> securityProps = securityProperties.get();
         Map<String, String> credentials = ImmutableMap.<String, String>builder()
-                .putAll(Maps.filterKeys(securityProps, 
+                .putAll(Maps.filterKeys(securityProps,
                     key -> Set.of(OAuth2Properties.TOKEN, OAuth2Properties.CREDENTIAL).contains(key)))
                 .buildOrThrow();
-        
+
         Map<String, String> properties = ImmutableMap.of(
                 "catalog", config.getPrefix(),
                 "warehouse", config.getUri().toString());

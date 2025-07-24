@@ -1,4 +1,4 @@
-/*
+plugin/trino-hive/src/main/java/io/trino/plugin/hive/metastore/polaris/PolarisHiveMetastoreFactory.java/*
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
@@ -28,18 +28,20 @@ public class PolarisHiveMetastoreFactory
 {
     private final PolarisRestClient polarisClient;
     private final RESTSessionCatalog restSessionCatalog;
+    private final SecurityProperties securityProperties;
 
     @Inject
-    public PolarisHiveMetastoreFactory(PolarisRestClient polarisClient, RESTSessionCatalog restSessionCatalog)
+    public PolarisHiveMetastoreFactory(PolarisRestClient polarisClient, RESTSessionCatalog restSessionCatalog, SecurityProperties securityProperties)
     {
         this.polarisClient = requireNonNull(polarisClient, "polarisClient is null");
         this.restSessionCatalog = requireNonNull(restSessionCatalog, "restSessionCatalog is null");
+        this.securityProperties = requireNonNull(securityProperties, "securityProperties is null");
     }
 
     @Override
     public HiveMetastore createMetastore(Optional<ConnectorIdentity> identity)
     {
-        return new PolarisHiveMetastore(polarisClient, restSessionCatalog);
+        return new PolarisHiveMetastore(polarisClient, restSessionCatalog, securityProperties);
     }
 
     @Override
