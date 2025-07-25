@@ -40,6 +40,7 @@ import io.trino.spi.connector.SchemaTableName;
 import io.trino.spi.connector.TableNotFoundException;
 import io.trino.spi.function.LanguageFunction;
 import io.trino.spi.predicate.TupleDomain;
+import io.trino.spi.security.PrincipalType;
 import io.trino.spi.security.RoleGrant;
 import io.trino.spi.statistics.ColumnStatisticType;
 import io.trino.spi.type.Type;
@@ -82,28 +83,36 @@ public class PolarisHiveMetastore
         this.restSessionCatalog = requireNonNull(restSessionCatalog, "restSessionCatalog is null");
         this.securityProperties = requireNonNull(securityProperties, "securityProperties is null");
     }
-
+git
     @Override
     public Optional<Database> getDatabase(String databaseName)
     {
         try {
             // Check if namespace exists by trying to list namespaces and find this one
             // This uses RESTSessionCatalog which handles OAuth2 properly and identically
-            // We avoid generic table operations which use different HTTP client authentication
             List<PolarisNamespace> namespaces = polarisClient.listNamespaces(Optional.empty());
+            System.out.println("DEBUG: Looking for database '" + databaseName + "' in namespaces: " +
+                             namespaces.stream().map(PolarisNamespace::getName).collect(toImmutableList()));
+
             Optional<PolarisNamespace> namespace = namespaces.stream()
                     .filter(ns -> ns.getName().equals(databaseName))
                     .findFirst();
 
             if (namespace.isPresent()) {
+                System.out.println("DEBUG: Found database: " + namespace.get().getName());
                 return Optional.of(Database.builder()
                         .setDatabaseName(namespace.get().getName())
+                        .setOwnerName(Optional.of("trino-user"))
+                        .setOwnerType(Optional.of(PrincipalType.USER))
                         .setParameters(namespace.get().getProperties())
                         .build());
             }
+            System.out.println("DEBUG: Database '" + databaseName + "' not found");
             return Optional.empty();
         }
         catch (RuntimeException e) {
+            System.out.println("DEBUG: Exception in getDatabase for '" + databaseName + "': " +
+                             e.getClass().getSimpleName() + ": " + e.getMessage());
             throw new TrinoException(HIVE_METASTORE_ERROR, "Failed to get database: " + databaseName, e);
         }
     }
@@ -134,14 +143,19 @@ public class PolarisHiveMetastore
             // Convert Iceberg table to Hive representation
             return Optional.of(convertIcebergToHiveTable(databaseName, tableName, icebergTable));
         }
-        catch (NoSuchTableException e) {
-            // Not an Iceberg table, try as a generic table
-            // Now this should work with proper OAuth2 authentication
+        catch (Exception e) {
+            // Iceberg table loading failed, try as a generic table
+            System.out.println("DEBUG: Iceberg table loading failed for " + databaseName + "." + tableName +
+                             ", trying generic table API. Exception: " + e.getClass().getSimpleName() + ": " + e.getMessage());
+
             try {
                 PolarisGenericTable genericTable = polarisClient.loadGenericTable(databaseName, tableName);
+                System.out.println("DEBUG: Successfully loaded as generic table: " + databaseName + "." + tableName);
                 return Optional.of(convertGenericToHiveTable(databaseName, genericTable));
             }
-            catch (TableNotFoundException ex) {
+            catch (Exception ex) {
+                System.out.println("DEBUG: Generic table loading also failed for " + databaseName + "." + tableName +
+                                 ". Exception: " + ex.getClass().getSimpleName() + ": " + ex.getMessage());
                 return Optional.empty();
             }
         }
@@ -813,35 +827,46 @@ public class PolarisHiveMetastore
 
     private Table convertGenericToHiveTable(String databaseName, PolarisGenericTable genericTable)
     {
-        // Since generic tables don't have schema information in Polaris,
-        // we'll create a table with minimal column information.
-        // The actual schema will be determined by the engine (Delta Lake, CSV reader, etc.)
-        List<Column> columns = ImmutableList.of();
+        // For Delta tables, create basic columns since we don't have detailed schema from Polaris
+        // In a real implementation, you'd want to read the Delta table metadata to get the actual schema
+        List<Column> columns;
+        if ("delta".equalsIgnoreCase(genericTable.getFormat())) {
+            // Create some basic columns that are common in Delta tables
+            // TODO: Ideally, read the actual Delta table schema from _delta_log
+            columns = ImmutableList.of(
+                    new Column("id", HiveType.HIVE_INT, Optional.empty(), ImmutableMap.of()),
+                    new Column("name", HiveType.HIVE_STRING, Optional.empty(), ImmutableMap.of()),
+                    new Column("value", HiveType.HIVE_STRING, Optional.empty(), ImmutableMap.of()));
+        }
+        else {
+            columns = ImmutableList.of();
+        }
 
-        // Determine storage format based on generic table format
-        StorageFormat storageFormat = switch (genericTable.getFormat().toLowerCase(Locale.ROOT)) {
-            case "delta" -> StorageFormat.create(
-                    "org.apache.hadoop.mapred.FileInputFormat",
-                    "org.apache.hadoop.mapred.FileOutputFormat",
-                    "org.apache.hadoop.hive.serde2.lazy.LazySimpleSerDe");
-            case "csv" -> StorageFormat.create(
-                    "org.apache.hadoop.mapred.TextInputFormat",
-                    "org.apache.hadoop.mapred.HiveIgnoreKeyTextOutputFormat",
-                    "org.apache.hadoop.hive.serde2.OpenCSVSerde");
-            default -> StorageFormat.create(
-                    "org.apache.hadoop.mapred.FileInputFormat",
-                    "org.apache.hadoop.mapred.FileOutputFormat",
-                    "org.apache.hadoop.hive.serde2.lazy.LazySimpleSerDe");
-        };
+        // Use Parquet for Delta tables
+        StorageFormat storageFormat;
+        if ("delta".equalsIgnoreCase(genericTable.getFormat())) {
+            storageFormat = StorageFormat.create(
+                    "org.apache.hadoop.hive.ql.io.parquet.serde.ParquetHiveSerDe",
+                    "org.apache.hadoop.hive.ql.io.parquet.MapredParquetInputFormat",
+                    "org.apache.hadoop.hive.ql.io.parquet.MapredParquetOutputFormat");
+        }
+        else {
+            storageFormat = switch (genericTable.getFormat().toLowerCase(Locale.ROOT)) {
+                case "csv" -> StorageFormat.create(
+                        "org.apache.hadoop.hive.serde2.OpenCSVSerde",
+                        "org.apache.hadoop.mapred.TextInputFormat",
+                        "org.apache.hadoop.mapred.HiveIgnoreKeyTextOutputFormat");
+                default -> StorageFormat.create(
+                        "org.apache.hadoop.hive.serde2.lazy.LazySimpleSerDe",
+                        "org.apache.hadoop.mapred.FileInputFormat",
+                        "org.apache.hadoop.mapred.FileOutputFormat");
+            };
+        }
 
         ImmutableMap.Builder<String, String> parameters = ImmutableMap.builder();
-        parameters.putAll(genericTable.getProperties());
-
-        // Add format information
-        if ("delta".equalsIgnoreCase(genericTable.getFormat())) {
-            parameters.put("spark.sql.sources.provider", "DELTA");
-        }
-        parameters.put("format", genericTable.getFormat());
+        genericTable.getProperties().entrySet().stream()
+                .filter(entry -> !isDeltaSpecificProperty(entry.getKey()))
+                .forEach(entry -> parameters.put(entry.getKey(), entry.getValue()));
 
         // Add comment if present
         genericTable.getDoc().ifPresent(doc -> parameters.put("comment", doc));
@@ -849,7 +874,7 @@ public class PolarisHiveMetastore
         Table.Builder tableBuilder = Table.builder()
                 .setDatabaseName(databaseName)
                 .setTableName(genericTable.getName())
-                .setOwner(Optional.of("trino-user")) // Set owner to prevent NullPointerException
+                .setOwner(Optional.of("trino-user"))
                 .setTableType("EXTERNAL_TABLE")
                 .setDataColumns(columns)
                 .setParameters(parameters.buildOrThrow());
@@ -859,8 +884,20 @@ public class PolarisHiveMetastore
                 tableBuilder.withStorage(storage -> storage
                     .setLocation(location)
                     .setStorageFormat(storageFormat)
-                    .setSerdeParameters(ImmutableMap.of("path", location))));
+                    .setSerdeParameters(ImmutableMap.of())));
 
         return tableBuilder.build();
+    }
+
+    /**
+     * Check if a property is Delta-specific and should be filtered out
+     */
+    private boolean isDeltaSpecificProperty(String key)
+    {
+        return key.equals("format") ||
+               key.equals("spark.sql.sources.provider") ||
+               key.startsWith("delta.") ||
+               key.equals("table_type") ||
+               key.equals("has_delta_log");
     }
 }

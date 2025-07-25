@@ -40,6 +40,7 @@ import org.apache.iceberg.rest.RESTSessionCatalog;
 import org.apache.iceberg.rest.auth.OAuth2Properties;
 
 import java.io.IOException;
+import java.io.InputStream;
 import java.net.URI;
 import java.util.List;
 import java.util.Map;
@@ -53,6 +54,7 @@ import static io.airlift.http.client.Request.Builder.prepareGet;
 import static io.airlift.http.client.Request.Builder.preparePost;
 import static java.nio.charset.StandardCharsets.UTF_8;
 import static java.util.Objects.requireNonNull;
+import static java.util.stream.Collectors.joining;
 
 /**
  * REST client for Apache Polaris catalog API.
@@ -171,33 +173,103 @@ public class PolarisRestClient
         try {
             // Extract OAuth2 credentials exactly like TrinoIcebergRestCatalogFactory does
             Map<String, String> securityProps = securityProperties.get();
+            System.out.println("DEBUG: Security properties: " + securityProps.keySet());
+
             Map<String, String> credentials = Maps.filterKeys(securityProps,
                     key -> Set.of(OAuth2Properties.TOKEN, OAuth2Properties.CREDENTIAL).contains(key));
+            System.out.println("DEBUG: Filtered credentials: " + credentials.keySet());
+            System.out.println("DEBUG: OAuth2Properties.TOKEN = '" + OAuth2Properties.TOKEN + "'");
+            System.out.println("DEBUG: OAuth2Properties.CREDENTIAL = '" + OAuth2Properties.CREDENTIAL + "'");
 
             // If we have a direct token, use it
             if (credentials.containsKey(OAuth2Properties.TOKEN)) {
+                System.out.println("DEBUG: Using direct token");
                 return ImmutableMap.of("Authorization", "Bearer " + credentials.get(OAuth2Properties.TOKEN));
             }
 
-            // If we have credentials, we need to use the same OAuth2 flow as RESTSessionCatalog
-            // For now, create session context with credentials and let Iceberg handle token exchange
+            // If we have credentials, perform OAuth2 token exchange like RESTSessionCatalog does
             if (credentials.containsKey(OAuth2Properties.CREDENTIAL)) {
-                // Create session context with the same credentials as RESTSessionCatalog
-                String sessionId = UUID.randomUUID().toString();
-                SessionCatalog.SessionContext sessionContext = new SessionCatalog.SessionContext(
-                        sessionId, "trino-user", credentials, ImmutableMap.of(), null);
-
-                // Note: This still requires that the underlying HTTP client handles OAuth2 token exchange
-                // For true compatibility, we'd need to use Iceberg's HTTPClient instead of Trino's HttpClient
-                throw new PolarisException("Credential-based OAuth2 requires using Iceberg's HTTPClient. " +
-                        "Generic table operations are temporarily disabled. Use direct token authentication instead.");
+                System.out.println("DEBUG: Performing OAuth2 token exchange");
+                String token = performOAuth2TokenExchange(credentials.get(OAuth2Properties.CREDENTIAL));
+                return ImmutableMap.of("Authorization", "Bearer " + token);
             }
 
-            // No authentication credentials found
+            // No authentication credentials found, return empty headers
+            System.out.println("DEBUG: No authentication credentials found");
             return ImmutableMap.of();
         }
         catch (Exception e) {
+            System.out.println("DEBUG: Exception in getAuthHeaders: " + e.getClass().getSimpleName() + ": " + e.getMessage());
+            e.printStackTrace();
             throw new PolarisException("Failed to get authentication headers", e);
+        }
+    }
+
+    /**
+     * Performs OAuth2 token exchange using the same flow as RESTSessionCatalog
+     */
+    private String performOAuth2TokenExchange(String credential)
+    {
+        try {
+            // Parse credential (format: "client_id:client_secret")
+            String[] parts = credential.split(":", 2);
+            if (parts.length != 2) {
+                throw new IllegalArgumentException("Invalid credential format. Expected 'client_id:client_secret'");
+            }
+            String clientId = parts[0];
+            String clientSecret = parts[1];
+
+            // Build OAuth2 token request
+            Map<String, String> tokenRequest = ImmutableMap.of(
+                    "grant_type", "client_credentials",
+                    "client_id", clientId,
+                    "client_secret", clientSecret,
+                    "scope", securityProperties.get().getOrDefault(OAuth2Properties.SCOPE, "PRINCIPAL_ROLE:ALL"));
+
+            // Create form-encoded body
+            String body = tokenRequest.entrySet().stream()
+                    .map(entry -> entry.getKey() + "=" + entry.getValue())
+                    .collect(joining("&"));
+
+            // Make token request
+            URI tokenUri = URI.create(securityProperties.get().get(OAuth2Properties.OAUTH2_SERVER_URI));
+            Request request = preparePost()
+                    .setUri(tokenUri)
+                    .setHeader("Content-Type", "application/x-www-form-urlencoded")
+                    .setBodyGenerator(StaticBodyGenerator.createStaticBodyGenerator(body, UTF_8))
+                    .build();
+
+            // Execute token request
+            return httpClient.execute(request, new ResponseHandler<String, RuntimeException>()
+            {
+                @Override
+                public String handleException(Request request, Exception exception)
+                {
+                    throw new PolarisException("OAuth2 token exchange failed", exception);
+                }
+
+                @Override
+                public String handle(Request request, Response response)
+                {
+                    if (response.getStatusCode() != 200) {
+                        throw new PolarisException("OAuth2 token exchange failed with status: " + response.getStatusCode());
+                    }
+
+                    try {
+                        try (InputStream inputStream = response.getInputStream()) {
+                            String responseBody = new String(inputStream.readAllBytes(), UTF_8);
+                            Map<String, Object> tokenResponse = objectMapper.readValue(responseBody, Map.class);
+                            return (String) tokenResponse.get("access_token");
+                        }
+                    }
+                    catch (Exception e) {
+                        throw new PolarisException("Failed to parse OAuth2 token response", e);
+                    }
+                }
+            });
+        }
+        catch (Exception e) {
+            throw new PolarisException("OAuth2 token exchange failed", e);
         }
     }
 
@@ -292,10 +364,22 @@ public class PolarisRestClient
                     throw new PolarisException("Failed to load generic table: " + response.getStatusCode());
                 }
                 try {
-                    LoadGenericTableResponse loadResponse = objectMapper.readValue(response.getInputStream(), LoadGenericTableResponse.class);
-                    return loadResponse.getTable();
+                    try (InputStream inputStream = response.getInputStream()) {
+                        String responseBody = new String(inputStream.readAllBytes(), UTF_8);
+                        System.out.println("DEBUG: Generic table response body: " + responseBody);
+
+                        com.fasterxml.jackson.databind.JsonNode rootNode = objectMapper.readTree(responseBody);
+                        com.fasterxml.jackson.databind.JsonNode tableNode = rootNode.get("table");
+                        PolarisGenericTable table = objectMapper.treeToValue(tableNode, PolarisGenericTable.class);
+                        System.out.println("DEBUG: Successfully parsed generic table: " + table.getName());
+                        return table;
+                    }
                 }
                 catch (IOException e) {
+                    System.out.println("DEBUG: Jackson parsing error: " + e.getClass().getSimpleName() + ": " + e.getMessage());
+                    if (e.getCause() != null) {
+                        System.out.println("DEBUG: Caused by: " + e.getCause().getClass().getSimpleName() + ": " + e.getCause().getMessage());
+                    }
                     throw new PolarisException("Failed to parse load generic table response", e);
                 }
             }
