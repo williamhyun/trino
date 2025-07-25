@@ -715,6 +715,9 @@ public class PolarisHiveMetastore
                 .forEach(entry -> cleanParametersBuilder.put(entry.getKey(), entry.getValue()));
         Map<String, String> cleanParameters = cleanParametersBuilder.buildOrThrow();
 
+        // Get the data location from the current snapshot
+        String dataLocation = getDataLocationFromSnapshot(icebergTable);
+
         // Create a standard Parquet external table
         return Table.builder()
                 .setDatabaseName(databaseName)
@@ -724,13 +727,41 @@ public class PolarisHiveMetastore
                 .setDataColumns(hiveColumns) // Real columns from Iceberg schema
                 .setParameters(cleanParameters) // Clean parameters without Iceberg markers
                 .withStorage(storage -> storage
-                        .setLocation(icebergTable.location())
+                        .setLocation(dataLocation) // Use actual data location, not base table location
                         .setStorageFormat(StorageFormat.create(
                                 "org.apache.hadoop.hive.ql.io.parquet.serde.ParquetHiveSerDe",
                                 "org.apache.hadoop.hive.ql.io.parquet.MapredParquetInputFormat",
                                 "org.apache.hadoop.hive.ql.io.parquet.MapredParquetOutputFormat"))
                         .setSerdeParameters(ImmutableMap.of()))
                 .build();
+    }
+
+    /**
+     * Extract the data location from the current Iceberg snapshot.
+     * For unpartitioned tables, this typically points to the data directory.
+     */
+    private String getDataLocationFromSnapshot(org.apache.iceberg.Table icebergTable)
+    {
+        try {
+            // Get current snapshot
+            var currentSnapshot = icebergTable.currentSnapshot();
+            if (currentSnapshot == null) {
+                // No data yet, return base location
+                return icebergTable.location();
+            }
+
+            // For unpartitioned tables, we can use the base location + "/data"
+            // This is the standard Iceberg convention
+            String baseLocation = icebergTable.location();
+            if (!baseLocation.endsWith("/")) {
+                baseLocation += "/";
+            }
+            return baseLocation + "data";
+        }
+        catch (Exception e) {
+            // Fallback to base location if snapshot reading fails
+            return icebergTable.location();
+        }
     }
 
     /**
